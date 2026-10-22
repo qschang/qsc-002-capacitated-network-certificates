@@ -16,5 +16,5 @@ set -e
 if [ "$pytest_rc" -ne 0 ] || [ ! -s "$REPORT_TMP" ]; then write_zero; exit "$pytest_rc"; fi
 if ! python3 -B -I ./verify_junit.py "$REPORT_TMP"; then write_zero; exit 1; fi
 mv -f "$REPORT_TMP" "$REPORT"
-printf '1.000\n' > "$REWARD_FILE"
+if ! python3 -B -I ./score.py --config ./scoring.json --junit "$REPORT" --report-out /logs/verifier/scoring-report.json --reward-out "$REWARD_FILE"; then write_zero; exit 1; fi
 trap - INT TERM HUP
