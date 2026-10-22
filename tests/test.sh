@@ -1,9 +1,20 @@
 #!/bin/sh
 set -eu
-reward_file=/logs/verifier/reward.txt
-mkdir -p "$(dirname "$reward_file")"
-printf '0.000\n' > "$reward_file"
-chmod 0444 "$reward_file" 2>/dev/null || true
-cleanup() { code=$?; chmod 0644 "$reward_file" 2>/dev/null || true; if [ "$code" -eq 0 ]; then printf '1.000\n' > "$reward_file"; else printf '0.000\n' > "$reward_file"; fi; chmod 0444 "$reward_file" 2>/dev/null || true; exit "$code"; }
-trap cleanup EXIT INT TERM HUP
-timeout 240s python3 -m pytest -q "$(dirname "$0")/test_contract.py" --junitxml=/tmp/network-certificates-junit.xml
+REWARD_FILE=/logs/verifier/reward.txt
+REPORT=/logs/verifier/network-certificates-junit.xml
+REPORT_TMP="${REPORT}.tmp.$$"
+mkdir -p /logs/verifier
+printf '0.000\n' > "$REWARD_FILE"
+write_zero() { printf '0.000\n' > "$REWARD_FILE"; rm -f "$REPORT_TMP"; }
+trap 'write_zero; exit 1' INT TERM HUP
+write_zero
+cd "$(dirname "$0")"
+set +e
+timeout 240s python3 -B -I -m pytest -q -p no:cacheprovider -c /dev/null ./test_contract.py --junitxml="$REPORT_TMP" >/logs/verifier/pytest.log 2>&1
+pytest_rc=$?
+set -e
+if [ "$pytest_rc" -ne 0 ] || [ ! -s "$REPORT_TMP" ]; then write_zero; exit "$pytest_rc"; fi
+if ! python3 -B -I ./verify_junit.py "$REPORT_TMP"; then write_zero; exit 1; fi
+mv -f "$REPORT_TMP" "$REPORT"
+printf '1.000\n' > "$REWARD_FILE"
+trap - INT TERM HUP
