@@ -23,10 +23,14 @@ def test_unreachable_sink_returns_null_certificates():
   a=base(); a['edges']=[]; x=json.loads(run(a)[1]); assert x['shortest_path'] is None and x['shortest_path_cost'] is None
 def test_rejects_negative_cycle_atomically():
   """AXIS-REJECTION: reachable negative-cycle rejection is atomic."""
-  a=base(); a['edges'] += [{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'s','capacity':1,'cost':-2}]; r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None and left==[] and not exists and 'report' not in left
+  a=base(); a['edges'] += [{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'s','capacity':1,'cost':-2}]; r,b,_,left,exists=run(a)
+  assert r.returncode!=0 and b is None
+  assert left == [] and not exists and 'report' not in left
 def test_late_invalid_edge_preserves_sentinel():
   """VALID-03: "must not create or modify the destination" on a late malformed edge."""
-  a=base(); a['edges'].append({'u':'x','v':'t','capacity':1,'cost':0}); sent=b'keep'; r,b,s,left,exists=run(a,sent); assert r.returncode!=0 and b==s and left==[] and exists and 'report' not in left
+  a=base(); a['edges'].append({'u':'x','v':'t','capacity':1,'cost':0}); sent=b'keep'; r,b,s,left,exists=run(a,sent)
+  assert r.returncode!=0 and b==s
+  assert left == [] and exists and 'report' not in left
 def test_node_order_only_changes_sorted_projection():
   """AXIS-CERTIFICATE: node-order projection and disconnected-state invariance."""
   a=base(); b=dict(a); b['nodes']=['t','b','a','s']; x=json.loads(run(a)[1]); y=json.loads(run(b)[1]); assert x['max_flow']==y['max_flow'] and y['source_side']==['a','s']
@@ -38,19 +42,38 @@ def test_zero_capacity_edges_are_ignored():
   a=base(); a['edges'].append({'u':'s','v':'z','capacity':0,'cost':-10}) if False else None; assert json.loads(run(a)[1])['max_flow']==9
 def test_invalid_boolean_capacity_rejected():
   """VALID-03: "booleans are not numbers."""
-  a=base(); a['edges'][0]['capacity']=True; r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None and left==[] and not exists and 'report' not in left
+  a=base(); a['edges'][0]['capacity']=True; r,b,_,left,exists=run(a)
+  assert r.returncode!=0 and b is None
+  assert left == [] and not exists and 'report' not in left
 def test_output_has_exact_public_keys():
   """CERT-04: "Return an object with exactly max_flow, min_cut_capacity, source_side, shortest_path_cost, and shortest_path."""
   x=json.loads(run(base())[1]); assert set(x)=={'max_flow','min_cut_capacity','source_side','shortest_path_cost','shortest_path'}
 
 def test_invalid_top_level_preserves_absent_destination_and_no_artifacts():
   """VALID-03: malformed top-level input rejects without creating output or side artifacts."""
-  r,b,_,left,exists=run({'nodes':[],'edges':[],'source':'s','sink':'t'}); assert r.returncode!=0 and b is None and left==[] and not exists and 'report' not in left
+  r,b,_,left,exists=run({'nodes':[],'edges':[],'source':'s','sink':'t'})
+  assert r.returncode!=0 and b is None
+  assert left == [] and not exists and 'report' not in left
 
 def test_invalid_cost_preserves_existing_sentinel_byte_for_byte():
   """VALID-03: non-finite/non-numeric cost rejects while preserving a pre-existing destination."""
-  a=base(); a['edges'][0]['cost']=True; sent=b'unchanged\x00'; r,b,s,left,exists=run(a,sent); assert r.returncode!=0 and b==s and left==[] and exists and 'report' not in left
+  a=base(); a['edges'][0]['cost']=True; sent=b'unchanged\x00'; r,b,s,left,exists=run(a,sent)
+  assert r.returncode!=0 and b==s
+  assert left == [] and exists and 'report' not in left
 
 def test_late_invalid_record_does_not_publish_prefix_or_checkpoint():
   """VALID-03: a valid prefix followed by a malformed record leaves no partial publication."""
-  a=base(); a['edges']=a['edges']+[{'u':'s','v':'t','capacity':float('nan'),'cost':0}]; r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None and left==[] and not exists and 'report' not in left
+  a=base(); a['edges']=a['edges']+[{'u':'s','v':'t','capacity':float('nan'),'cost':0}]; r,b,_,left,exists=run(a)
+  assert r.returncode!=0 and b is None
+  assert left == [] and not exists and 'report' not in left
+
+def test_released_rejected_released_state_matrix():
+  """AXIS-STATE: released→rejected→released preserves publication and recovery invariants."""
+  with tempfile.TemporaryDirectory() as td:
+    p=Path(td); i=p/'i.json'; o=p/'o.json'; good=base(); i.write_text(json.dumps(good),encoding='utf-8')
+    first=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10); first_bytes=o.read_bytes()
+    bad=base(); bad['edges'][0]['capacity']=True; i.write_text(json.dumps(bad),encoding='utf-8')
+    second=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert first.returncode==0 and second.returncode!=0 and o.read_bytes()==first_bytes
+    i.write_text(json.dumps(good),encoding='utf-8'); third=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert third.returncode==0 and o.read_bytes()==first_bytes
