@@ -19,6 +19,7 @@ def run(data, raw=None, sentinel=None):
                 lane.setdefault("early_capacity", lane.get("capacity", 1))
                 lane.setdefault("late_capacity", lane.get("capacity", 1))
                 lane.setdefault("transit_minutes", 1)
+                lane.pop("capacity", None)
             for order in data.get("orders", []):
                 order.setdefault("sla_minutes", 10_080)
                 order.setdefault("allowed_waves", ["early", "late"])
