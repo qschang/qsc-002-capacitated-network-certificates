@@ -513,10 +513,10 @@ def test_atomic_replace_failure_preserves_old_report(monkeypatch):
         input_path.write_text(json.dumps(data), encoding="utf-8")
         sentinel = b"previous-report"
         output_path.write_bytes(sentinel)
+        monkeypatch.setattr(os, "replace", lambda _src, _dst: (_ for _ in ()).throw(OSError("injected")))
         spec = importlib.util.spec_from_file_location("candidate_solver", APP)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        monkeypatch.setattr(module.os, "replace", lambda _src, _dst: (_ for _ in ()).throw(OSError("injected")))
         monkeypatch.setattr(sys, "argv", [APP, str(input_path), str(output_path)])
         status = module.main()
         assert status != 0 and output_path.read_bytes() == sentinel
