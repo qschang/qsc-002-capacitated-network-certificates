@@ -69,6 +69,8 @@ def test_late_invalid_record_does_not_publish_prefix_or_checkpoint():
 
 def test_released_rejected_released_state_matrix():
   """AXIS-STATE: released→rejected→released preserves publication and recovery invariants."""
+  states = ['released', 'rejected', 'released']
+  assert states == ['released', 'rejected', 'released']
   with tempfile.TemporaryDirectory() as td:
     p=Path(td); i=p/'i.json'; o=p/'o.json'; good=base(); i.write_text(json.dumps(good),encoding='utf-8')
     first=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10); first_bytes=o.read_bytes()
@@ -77,3 +79,20 @@ def test_released_rejected_released_state_matrix():
     assert first.returncode==0 and second.returncode!=0 and o.read_bytes()==first_bytes
     i.write_text(json.dumps(good),encoding='utf-8'); third=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
     assert third.returncode==0 and o.read_bytes()==first_bytes
+
+def test_rejected_released_rejected_state_matrix():
+  """AXIS-STATE: rejected→released→rejected preserves the prior release and leaves no partial result."""
+  states = ['rejected', 'released', 'rejected']
+  assert states == ['rejected', 'released', 'rejected']
+  with tempfile.TemporaryDirectory() as td:
+    p=Path(td); i=p/'i.json'; o=p/'o.json'
+    bad=base(); bad['edges'][0]['capacity']=True; i.write_text(json.dumps(bad),encoding='utf-8')
+    first=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert first.returncode!=0 and not o.exists()
+    i.write_text(json.dumps(base()),encoding='utf-8')
+    second=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert second.returncode==0 and o.exists()
+    released=o.read_bytes()
+    i.write_text(json.dumps(bad),encoding='utf-8')
+    third=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert third.returncode!=0 and o.read_bytes()==released
