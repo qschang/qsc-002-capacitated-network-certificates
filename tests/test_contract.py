@@ -14,6 +14,11 @@ def run(data, raw=None, sentinel=None):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         input_path, output_path = root / "input.json", root / "output.json"
+        if raw is None:
+            for lane in data.get("lanes", []):
+                lane.setdefault("transit_minutes", 1)
+            for order in data.get("orders", []):
+                order.setdefault("sla_minutes", 10_080)
         input_path.write_text(raw if raw is not None else json.dumps(data), encoding="utf-8")
         if sentinel is not None:
             output_path.write_bytes(sentinel)
@@ -25,25 +30,26 @@ def run(data, raw=None, sentinel=None):
         return process, output, output_path.exists(), leftovers
 
 
-def all_paths(start, end, lanes):
+def all_paths(start, end, lanes, sla_minutes=10_080):
     paths = []
 
-    def walk(node, seen, chosen):
+    def walk(node, seen, chosen, elapsed=0, sla_minutes=10_080):
         if node == end:
             paths.append(tuple(chosen))
             return
         for lane in lanes:
-            if lane["from"] == node and lane["to"] not in seen:
-                walk(lane["to"], seen | {lane["to"]}, chosen + [lane["lane_id"]])
+            next_elapsed = elapsed + lane.get("transit_minutes", 1)
+            if lane["from"] == node and lane["to"] not in seen and next_elapsed <= sla_minutes:
+                walk(lane["to"], seen | {lane["to"]}, chosen + [lane["lane_id"]], next_elapsed, sla_minutes)
 
-    walk(start, {start}, [])
+    walk(start, {start}, [], sla_minutes=sla_minutes)
     return paths
 
 
 def exhaustive_plan(data):
     orders = data["orders"]
     lanes = {lane["lane_id"]: lane for lane in data["lanes"]}
-    choices = [[None] + all_paths(order["origin"], order["destination"], data["lanes"]) for order in orders]
+    choices = [[None] + all_paths(order["origin"], order["destination"], data["lanes"], sla_minutes=order.get("sla_minutes", 10_080)) for order in orders]
     best_key = None
     best_choice = None
     for selected in itertools.product(*choices):
@@ -97,6 +103,7 @@ def assert_plan_consistent(data, result):
             visited.add(current)
             loads[lane_id] += order["pallets"]
             cost += order["pallets"] * lane["unit_cost"]
+        assert sum(lane_by_id[lane_id].get("transit_minutes", 1) for lane_id in path) <= order.get("sla_minutes", 10_080)
         assert current == order["destination"]
     cost += sum(lane_by_id[lane_id]["open_fee"] for lane_id, load in loads.items() if load)
     assert result["served_counts"] == {str(i): counts[i] for i in range(3)}
@@ -158,16 +165,23 @@ def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
 def test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break():
     '''CAP-02/FIX-03/TIE-04: "所有订单共用同一班次的线路容量。"'''
     orders = [
-        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": 1, "pallets": 1}
+        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": i // 8, "pallets": 3}
         for i in range(24)
     ]
+    lane_specs = [
+        ("S", "A", 32), ("S", "B", 32),
+        ("A", "C", 9), ("A", "D", 9), ("A", "E", 9),
+        ("B", "C", 9), ("B", "D", 9), ("B", "E", 9),
+        ("C", "F", 9), ("C", "G", 9), ("C", "H", 9),
+        ("D", "F", 9), ("D", "G", 9), ("D", "H", 9),
+        ("E", "F", 9), ("E", "G", 9), ("E", "H", 9),
+        ("F", "T", 32), ("G", "T", 32), ("H", "T", 32),
+    ]
     data = {
-        "nodes": ["S", "T"],
+        "nodes": ["S", "A", "B", "C", "D", "E", "F", "G", "H", "T"],
         "lanes": [
-            {"lane_id": "A", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
-            {"lane_id": "B", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
-            {"lane_id": "C", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
-            {"lane_id": "D", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": f"L{i:02d}", "from": start, "to": end, "capacity": capacity, "open_fee": 0, "unit_cost": 0}
+            for i, (start, end, capacity) in enumerate(lane_specs)
         ],
         "orders": list(reversed(orders)),
     }
@@ -175,12 +189,45 @@ def test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break():
     result = json.loads(output)
     assignment = {row["order_id"]: row["path"] for row in result["orders"]}
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["served_counts"] == {"0": 0, "1": 24, "2": 0}
+    assert result["served_counts"] == {"0": 8, "1": 8, "2": 2}
     assert result["total_cost"] == 0
-    assert assignment == {
-        f"O{i:02d}": [chr(ord("A") + i // 6)] for i in range(24)
+    route_a = ["L00", "L02", "L08", "L17"]
+    route_b = ["L01", "L05", "L09", "L18"]
+    expected = {f"O{i:02d}": route_a for i in range(3)}
+    expected.update({f"O{i:02d}": ["L00", "L03", "L11", "L17"] for i in range(3, 6)})
+    expected.update({f"O{i:02d}": ["L00", "L04", "L14", "L17"] for i in range(6, 9)})
+    expected.update({f"O{i:02d}": route_b for i in range(9, 12)})
+    expected.update({f"O{i:02d}": ["L01", "L06", "L12", "L18"] for i in range(12, 15)})
+    expected.update({f"O15": ["L01", "L07", "L15", "L18"], "O22": ["L01", "L07", "L15", "L18"], "O23": ["L01", "L07", "L15", "L18"]})
+    expected.update({f"O{i:02d}": [] for i in range(16, 22)})
+    assert assignment == expected
+    assert [row["load"] for row in result["lane_loads"]] == [27, 27, 9, 9, 9, 9, 9, 9, 9, 9, 0, 9, 9, 0, 9, 9, 0, 27, 27, 0]
+    assert_plan_consistent(data, result)
+
+
+def test_sla_boundary_selects_a_feasible_route_and_rejects_late_only_service():
+    '''SLA-07: "线路的 `transit_minutes` 之和不得超过该订单的 `sla_minutes`"'''
+    data = {
+        "nodes": ["S", "A", "T"],
+        "lanes": [
+            {"lane_id": "Z-DIRECT", "from": "S", "to": "T", "capacity": 1, "open_fee": 10, "unit_cost": 0, "transit_minutes": 3},
+            {"lane_id": "A-1", "from": "S", "to": "A", "capacity": 1, "open_fee": 0, "unit_cost": 0, "transit_minutes": 2},
+            {"lane_id": "A-2", "from": "A", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0, "transit_minutes": 2},
+        ],
+        "orders": [
+            {"order_id": "SLA4", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "sla_minutes": 4},
+            {"order_id": "SLA3", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "sla_minutes": 3},
+            {"order_id": "SLA2", "origin": "S", "destination": "T", "priority": 1, "pallets": 1, "sla_minutes": 2},
+        ],
     }
-    assert [row["load"] for row in result["lane_loads"]] == [6, 6, 6, 6]
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["served_counts"] == {"0": 2, "1": 0, "2": 0}
+    assert {row["order_id"]: row["path"] for row in result["orders"]} == {
+        "SLA4": ["A-1", "A-2"], "SLA3": ["Z-DIRECT"], "SLA2": []
+    }
+    assert result["total_cost"] == 10
     assert_plan_consistent(data, result)
 
 
@@ -372,6 +419,12 @@ def test_rejects_boolean_capacity_and_preserves_sentinel():
 def test_rejects_fractional_integer_field():
     '''VALID-05: "容量为 1 至 32 的整数"'''
     raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","capacity":1.0,"open_fee":0,"unit_cost":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1}]}'
+    process, output, exists, leftovers = run({}, raw=raw)
+    assert process.returncode != 0 and output is None and not exists and leftovers == []
+    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1.5}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1}]}'
+    process, output, exists, leftovers = run({}, raw=raw)
+    assert process.returncode != 0 and output is None and not exists and leftovers == []
+    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1}]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
 

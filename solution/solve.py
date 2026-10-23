@@ -49,7 +49,7 @@ def validate(data):
     parsed_lanes = []
     adjacency = [[] for _ in nodes]
     for index, lane in enumerate(lanes):
-        if not isinstance(lane, dict) or set(lane) != {"lane_id", "from", "to", "capacity", "open_fee", "unit_cost"}:
+        if not isinstance(lane, dict) or set(lane) != {"lane_id", "from", "to", "capacity", "open_fee", "unit_cost", "transit_minutes"}:
             raise ValueError("lane schema")
         lane_id, start, end = lane["lane_id"], lane["from"], lane["to"]
         if not isinstance(lane_id, str) or not IDENTIFIER.fullmatch(lane_id) or lane_id in lane_ids:
@@ -60,14 +60,16 @@ def validate(data):
             raise ValueError("lane capacity")
         if not integer(lane["open_fee"], 0, 1_000_000) or not integer(lane["unit_cost"], 0, 1_000_000):
             raise ValueError("lane costs")
+        if not integer(lane["transit_minutes"], 1, 1_440):
+            raise ValueError("lane transit time")
         lane_ids.add(lane_id)
-        parsed = (lane_id, node_index[start], node_index[end], lane["capacity"], lane["open_fee"], lane["unit_cost"])
+        parsed = (lane_id, node_index[start], node_index[end], lane["capacity"], lane["open_fee"], lane["unit_cost"], lane["transit_minutes"])
         parsed_lanes.append(parsed)
         adjacency[parsed[1]].append(index)
     order_ids = set()
     parsed_orders = []
     for order in orders:
-        if not isinstance(order, dict) or set(order) != {"order_id", "origin", "destination", "priority", "pallets"}:
+        if not isinstance(order, dict) or set(order) != {"order_id", "origin", "destination", "priority", "pallets", "sla_minutes"}:
             raise ValueError("order schema")
         order_id, start, end = order["order_id"], order["origin"], order["destination"]
         if not isinstance(order_id, str) or not IDENTIFIER.fullmatch(order_id) or order_id in order_ids:
@@ -76,38 +78,41 @@ def validate(data):
             raise ValueError("order endpoints")
         if not integer(order["priority"], 0, 2) or not integer(order["pallets"], 1, 8):
             raise ValueError("order terms")
+        if not integer(order["sla_minutes"], 1, 10_080):
+            raise ValueError("order SLA")
         order_ids.add(order_id)
-        parsed_orders.append((order_id, node_index[start], node_index[end], order["priority"], order["pallets"]))
+        parsed_orders.append((order_id, node_index[start], node_index[end], order["priority"], order["pallets"], order["sla_minutes"]))
     return nodes, parsed_lanes, parsed_orders, adjacency
 
 
-def enumerate_paths(start, end, lanes, adjacency):
+def enumerate_paths(start, end, lanes, adjacency, sla_minutes):
     paths = []
     visited = {start}
     chosen = []
 
-    def walk(node):
+    def walk(node, elapsed):
         if node == end:
             paths.append(tuple(chosen))
             return
         for lane_index in adjacency[node]:
             lane = lanes[lane_index]
             target = lane[2]
-            if target in visited:
+            next_elapsed = elapsed + lane[6]
+            if target in visited or next_elapsed > sla_minutes:
                 continue
             visited.add(target)
             chosen.append(lane_index)
-            walk(target)
+            walk(target, next_elapsed)
             chosen.pop()
             visited.remove(target)
 
-    walk(start)
+    walk(start, 0)
     paths.sort(key=lambda path: tuple(lanes[index][0] for index in path))
     return paths
 
 
 def optimize(lanes, orders, adjacency):
-    paths = [enumerate_paths(order[1], order[2], lanes, adjacency) for order in orders]
+    paths = [enumerate_paths(order[1], order[2], lanes, adjacency, order[5]) for order in orders]
     order_sequence = sorted(range(len(orders)), key=lambda index: orders[index][0])
     search_sequence = sorted(range(len(orders)), key=lambda index: (orders[index][3], orders[index][0]))
     remaining = [[0, 0, 0] for _ in range(len(search_sequence) + 1)]
