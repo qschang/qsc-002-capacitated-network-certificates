@@ -1,10 +1,10 @@
 schema_version = "1.3"
 
 [task]
-name = "qsc/capacitated-network-certificates"
-description = "Produce a minimum-cost maximum-throughput plan and independently checkable primal, cut, and residual-potential certificates for a directed transport network."
+name = "qsc/exact-decimal-transport-settlement"
+description = "Produce an exact-decimal minimum-cost maximum-throughput transport settlement with independently checkable primal, cut, and residual-potential certificates."
 authors = [{ name = "QSC" }]
-keywords = ["network-optimization", "maximum-flow", "minimum-cost-flow", "duality", "multigraph"]
+keywords = ["network-optimization", "maximum-flow", "minimum-cost-flow", "decimal-accounting", "duality", "multigraph"]
 
 [agent]
 timeout_sec = 3600
@@ -23,5 +23,5 @@ timeout_sec = 300
 [metadata]
 difficulty = "expert"
 category = "H.1 Mathematics"
-tags = ["discrete-graph", "flow-cut", "primal-dual-certificate"]
-expert_time_estimate = "10h"
+tags = ["discrete-graph", "flow-cut", "exact-decimal", "primal-dual-certificate"]
+expert_time_estimate = "12h"

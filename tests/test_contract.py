@@ -7,12 +7,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from decimal import Decimal
 from pathlib import Path
 
 APP = os.environ.get("APP", "/app/solve.py")
-TOL = 1e-12
-
-
 def run(data, sentinel=None, raw=None):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
@@ -30,8 +28,15 @@ def run(data, sentinel=None, raw=None):
         return result, output, leftovers, output_path.exists()
 
 
-def tolerance(a, b):
-    return TOL + 1e-9 * max(abs(a), abs(b))
+def load_result(payload):
+    result = json.loads(payload)
+    assert all(isinstance(result[field], str) for field in ("max_flow", "min_cost", "min_cut_capacity"))
+    assert all(isinstance(value, str) for field in ("edge_flows", "node_potentials") for value in result[field])
+    for field in ("max_flow", "min_cost", "min_cut_capacity"):
+        result[field] = Decimal(result[field])
+    result["edge_flows"] = [Decimal(value) for value in result["edge_flows"]]
+    result["node_potentials"] = [Decimal(value) for value in result["node_potentials"]]
+    return result
 
 
 def certificate_issues(data, result):
@@ -42,43 +47,42 @@ def certificate_issues(data, result):
     potentials = result["node_potentials"]
     if len(flows) != len(edges) or len(potentials) != len(nodes):
         return ["vector lengths"]
-    balance = [0.0] * len(nodes)
+    balance = [Decimal(0)] * len(nodes)
     cost_terms = []
     issues = []
     for edge, flow in zip(edges, flows):
         u, v = index[edge["u"]], index[edge["v"]]
-        cap, cost = edge["capacity"], edge["cost"]
-        if not isinstance(flow, (int, float)) or isinstance(flow, bool) or not math.isfinite(flow):
+        cap, cost = Decimal(str(edge["capacity"])), Decimal(str(edge["cost"]))
+        if not isinstance(flow, Decimal):
             issues.append("flow type")
             continue
-        if flow < -tolerance(flow, 0.0) or flow > cap + tolerance(flow, cap):
+        if flow < 0 or flow > cap:
             issues.append("capacity bound")
         balance[u] += flow
         balance[v] -= flow
         cost_terms.append(flow * cost)
         forward = cost + potentials[u] - potentials[v]
         reverse = -cost + potentials[v] - potentials[u]
-        dual_tol = 1e-9 * max(1.0, abs(cost), abs(potentials[u]), abs(potentials[v]))
-        if cap - flow > 0.0 and forward < -dual_tol:
+        if cap - flow > 0 and forward < 0:
             issues.append("forward reduced cost")
-        if flow > 0.0 and reverse < -dual_tol:
+        if flow > 0 and reverse < 0:
             issues.append("reverse reduced cost")
     source, sink = index[data["source"]], index[data["sink"]]
-    if abs(balance[source] - result["max_flow"]) > tolerance(balance[source], result["max_flow"]):
+    if balance[source] != result["max_flow"]:
         issues.append("source conservation")
-    if abs(balance[sink] + result["max_flow"]) > tolerance(balance[sink], result["max_flow"]):
+    if balance[sink] != -result["max_flow"]:
         issues.append("sink conservation")
-    if any(abs(balance[i]) > tolerance(balance[i], 0.0) for i in range(len(nodes)) if i not in (source, sink)):
+    if any(balance[i] != 0 for i in range(len(nodes)) if i not in (source, sink)):
         issues.append("intermediate conservation")
-    cost = math.fsum(cost_terms)
-    if abs(cost - result["min_cost"]) > tolerance(cost, result["min_cost"]):
+    cost = sum(cost_terms, Decimal(0))
+    if cost != result["min_cost"]:
         issues.append("objective recomputation")
     source_side = set(result["source_side"])
     residual_reachable = {source}
     queue = [source]
     for u in queue:
         for edge, flow in zip(edges, flows):
-            if edge["u"] == nodes[u] and edge["capacity"] - flow > 0.0:
+            if edge["u"] == nodes[u] and Decimal(str(edge["capacity"])) - flow > 0:
                 v = index[edge["v"]]
                 if v not in residual_reachable:
                     residual_reachable.add(v)
@@ -91,10 +95,10 @@ def certificate_issues(data, result):
     expected_side = [node for i, node in enumerate(nodes) if i in residual_reachable]
     if result["source_side"] != expected_side:
         issues.append("residual reachable side")
-    cut = math.fsum(e["capacity"] for e in edges if e["u"] in source_side and e["v"] not in source_side)
-    if abs(cut - result["min_cut_capacity"]) > tolerance(cut, result["min_cut_capacity"]):
+    cut = sum((Decimal(str(e["capacity"])) for e in edges if e["u"] in source_side and e["v"] not in source_side), Decimal(0))
+    if cut != result["min_cut_capacity"]:
         issues.append("cut recomputation")
-    if abs(result["max_flow"] - cut) > tolerance(result["max_flow"], cut):
+    if result["max_flow"] != cut:
         issues.append("max-flow/min-cut equality")
     return issues
 
@@ -139,7 +143,7 @@ def test_optimum_and_complete_primal_dual_certificate():
     '''OPT-01: "`edge_flows` 与输入边一一对应并保持原顺序。" `max_flow` is maximized before `min_cost` is minimized.'''
     data = fixture()
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["max_flow"] == 4 and result["min_cost"] == 10
     assert len(result["edge_flows"]) == len(data["edges"])
@@ -161,10 +165,10 @@ def test_exhaustive_small_networks_match_independent_flow_enumeration():
         data = {"nodes": nodes, "edges": edges, "source": "s", "sink": "t"}
         expected_flow, expected_cost = brute_force_optimum(data)
         process, output, leftovers, exists = run(data)
-        result = json.loads(output)
+        result = load_result(output)
         assert process.returncode == 0 and exists and leftovers == [], f"case={case_id}"
         assert result["max_flow"] == expected_flow, f"case={case_id}"
-        assert abs(result["min_cost"] - expected_cost) <= tolerance(result["min_cost"], expected_cost), f"case={case_id}"
+        assert result["min_cost"] == expected_cost, f"case={case_id}"
         assert certificate_issues(data, result) == [], f"case={case_id}"
 
 
@@ -185,7 +189,7 @@ def test_residual_rerouting_finds_a_full_flow():
         ],
     }
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["max_flow"] == 2 and result["min_cost"] == 0
     assert certificate_issues(data, result) == []
@@ -204,7 +208,7 @@ def test_parallel_edges_keep_separate_costs_and_input_positions():
         ],
     }
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["max_flow"] == 3 and result["min_cost"] == 13
     assert result["edge_flows"] == [1, 2, 0]
@@ -225,28 +229,28 @@ def test_negative_edge_without_negative_cycle_is_optimized():
         ],
     }
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["max_flow"] == 2 and result["min_cost"] == -1
     assert certificate_issues(data, result) == []
 
 
 def test_every_positive_capacity_participates_and_zero_capacity_does_not():
-    '''OPT-04: "不得把严格正容量或正剩余容量按固定 epsilon 当作零。"'''
+    '''OPT-04: 正的最小结算单位必须参与运量；零容量线路不参与。'''
     data = {
         "nodes": ["s", "t"],
         "source": "s",
         "sink": "t",
         "edges": [
-            {"u": "s", "v": "t", "capacity": 1e-16, "cost": -2},
+            {"u": "s", "v": "t", "capacity": 0.000001, "cost": -2},
             {"u": "s", "v": "t", "capacity": 0, "cost": -100},
         ],
     }
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 1e-16 and result["edge_flows"] == [1e-16, 0]
-    assert result["min_cost"] == -2e-16
+    assert result["max_flow"] == Decimal("0.000001") and result["edge_flows"] == [Decimal("0.000001"), 0]
+    assert result["min_cost"] == Decimal("-0.000002000000")
     assert certificate_issues(data, result) == []
 
 
@@ -259,7 +263,7 @@ def test_unreachable_sink_has_zero_flow_and_valid_cut():
         "edges": [{"u": "s", "v": "a", "capacity": 2, "cost": 3}],
     }
     process, output, leftovers, exists = run(data)
-    result = json.loads(output)
+    result = load_result(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["max_flow"] == 0 and result["min_cost"] == 0
     assert result["edge_flows"] == [0] and result["source_side"] == ["s", "a"]
@@ -353,7 +357,7 @@ def test_identical_runs_produce_semantically_identical_results():
     second, second_bytes, second_leftovers, second_exists = run(data)
     assert first.returncode == second.returncode == 0
     assert first_exists and second_exists and first_leftovers == second_leftovers == []
-    assert json.loads(first_bytes) == json.loads(second_bytes)
+    assert first_bytes == second_bytes
 
 
 def test_public_scale_finishes_and_returns_a_checkable_optimum():
@@ -380,7 +384,29 @@ def test_public_scale_finishes_and_returns_a_checkable_optimum():
         process = subprocess.run([sys.executable, APP, str(input_path), str(output_path)], capture_output=True, timeout=20)
         elapsed = time.monotonic() - started
         assert process.returncode == 0 and elapsed < 20 and output_path.exists()
-        result = json.loads(output_path.read_bytes())
+        result = load_result(output_path.read_bytes())
         assert result["max_flow"] == 2 and result["min_cost"] == -510
         assert result["min_cut_capacity"] == 2 and result["source_side"] == ["S"]
         assert certificate_issues(data, result) == []
+
+
+def test_exact_ledger_keeps_a_minimum_unit_after_large_capacity_aggregation():
+    '''NUM-06: 运量按十进制定值解释，汇总不得吞掉最小结算单位。'''
+    edges = [{"u": "s", "v": "t", "capacity": 1_000_000_000, "cost": 0} for _ in range(10)]
+    edges.append({"u": "s", "v": "t", "capacity": 0.000001, "cost": 0})
+    data = {"nodes": ["s", "t"], "edges": edges, "source": "s", "sink": "t"}
+    process, output, leftovers, exists = run(data)
+    result = load_result(output)
+    expected = Decimal("10000000000.000001")
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == expected and result["min_cut_capacity"] == expected
+    assert result["edge_flows"][-1] == Decimal("0.000001")
+    assert certificate_issues(data, result) == []
+
+
+def test_rejects_more_than_six_decimal_places_without_publication():
+    '''NUM-06: 超出公开定点精度的运量或单价必须拒收。'''
+    data = {"nodes": ["s", "t"], "edges": [{"u": "s", "v": "t", "capacity": 0.0000001, "cost": 0}], "source": "s", "sink": "t"}
+    sentinel = b"prior-exact-ledger"
+    process, output, leftovers, exists = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
