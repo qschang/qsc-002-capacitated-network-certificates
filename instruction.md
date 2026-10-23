@@ -4,6 +4,8 @@
 
 输入对象必须且只能包含 `nodes`、`edges`、`source` 和 `sink` 四个字段。`nodes` 是非空且不重复的非空字符串数组；`source` 与 `sink` 是其中两个不同的节点。每条边必须且只能包含 `u`、`v`、`capacity` 和 `cost`；端点必须存在于节点数组中，容量必须是大于等于零的有限数，成本必须是有限数；允许平行边和自环。容量为零的边不参与供给或路线计算。若在从 `source` 沿正容量边可达的子图中存在负成本环，则输入无效。所有数值都必须有限，布尔值不得当作数值。
 
+任一 JSON 对象内同名键重复出现时，输入无效。
+
 输出对象必须且只能包含 `max_flow`、`min_cut_capacity`、`source_side`、`shortest_path_cost` 和 `shortest_path` 五个字段。`max_flow` 是把每条边分别计入后的 source 到 sink 的最大可行流；`min_cut_capacity` 是由 `source_side` 划分出的割容量，两者必须满足相对误差 `1e-9`、绝对误差 `1e-12` 的容差要求。`source_side` 必须包含报告流量完成后从 `source` 仍可沿正剩余容量到达的全部节点，并按输入节点顺序排列。
 
 `shortest_path` 必须是从 `source` 到 `sink` 且不重复节点的路径序列，`shortest_path_cost` 必须等于该路径所用正容量边成本之和。若 `sink` 不可达，两者都使用 `null`。存在多个同成本最短路径时，选择节点序列按字典序最小者。没有可达负成本环时，负成本边是合法输入；自环不得改变任一证书。
