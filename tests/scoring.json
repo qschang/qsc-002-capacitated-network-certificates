@@ -11,7 +11,7 @@
     "test_contract.py::test_tie_break_is_stable_under_order_input_permutation": {"priority":"boundary","rationale":"equal objective order assignment uses order IDs rather than input order","weight":0.04},
     "test_contract.py::test_unreachable_order_is_rejected_without_changing_other_service": {"priority":"boundary","rationale":"unreachable orders are rejected while independent feasible service remains","weight":0.02},
     "test_contract.py::test_output_shape_and_input_order_are_preserved": {"priority":"supporting","rationale":"output rows preserve their respective input order and exact public schema","weight":0.02},
-    "test_contract.py::test_identical_input_produces_identical_json_bytes": {"priority":"supporting","rationale":"canonical plan serialization is byte deterministic","weight":0.02},
+    "test_contract.py::test_identical_input_produces_identical_plan": {"priority":"supporting","rationale":"repeated identical requests produce the same public plan","weight":0.02},
     "test_contract.py::test_rejects_duplicate_json_key_without_creating_output": {"priority":"recovery","rationale":"duplicate JSON object members are rejected before publication","weight":0.03},
     "test_contract.py::test_rejects_boolean_capacity_and_preserves_sentinel": {"priority":"recovery","rationale":"boolean capacity rejection preserves prior report bytes","weight":0.03},
     "test_contract.py::test_rejects_fractional_integer_field": {"priority":"boundary","rationale":"integer-valued public fields reject floating JSON representations","weight":0.02},

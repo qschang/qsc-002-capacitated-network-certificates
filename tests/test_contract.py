@@ -108,7 +108,7 @@ def assert_plan_consistent(data, result):
 
 
 def test_hand_computed_dispatch_respects_priority_and_open_fee_gate():
-    '''PRI-01: "计划须先按优先级 0、1、2 的顺序，词典序最大化各级接收订单张数；"'''
+    '''接口："程序从第一个命令行参数读取 UTF-8 JSON，并将结果写入第二个参数指定的文件"；PRI-01："计划须先按优先级 0、1、2 的顺序，词典序最大化各级接收订单张数；"'''
     data = {
         "nodes": ["S", "A", "T"],
         "lanes": [
@@ -307,8 +307,8 @@ def test_output_shape_and_input_order_are_preserved():
     assert [row["lane_id"] for row in result["lane_loads"]] == ["Z", "A"]
 
 
-def test_identical_input_produces_identical_json_bytes():
-    '''VALID-05: "相同输入必须产生相同 JSON 字节。"'''
+def test_identical_input_produces_identical_plan():
+    '''VALID-05: "相同输入必须产生相同计划。"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 1, "open_fee": 3, "unit_cost": 4}],
@@ -318,7 +318,7 @@ def test_identical_input_produces_identical_json_bytes():
     second, bytes_second, exists_second, left_second = run(data)
     assert first.returncode == second.returncode == 0
     assert exists_first and exists_second and left_first == left_second == []
-    assert bytes_first == bytes_second
+    assert json.loads(bytes_first) == json.loads(bytes_second)
 
 
 def test_rejects_duplicate_json_key_without_creating_output():

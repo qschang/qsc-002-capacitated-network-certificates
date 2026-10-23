@@ -10,6 +10,6 @@
 
 计划须先按优先级 0、1、2 的顺序，词典序最大化各级接收订单张数；只有三项张数完全相同时，才最小化所有启用线路开线费与订单变动费之和。仍并列时，将订单按 `order_id` 升序排列，逐单比较路径的 `lane_id` 序列（ASCII 字典序）；未接收订单的路径记为空序列。选择路径序列整体词典序最小的计划。
 
-输出只能包含 `served_counts`、`total_cost`、`orders`、`lane_loads`。`served_counts` 必须含字符串键 `0`、`1`、`2` 及对应接收张数；`total_cost` 为整数。`orders` 按输入订单顺序给出对象 `{order_id, accepted, path}`；`accepted` 为布尔值，接收时 `path` 为线路 ID 数组，拒收时为空数组。`lane_loads` 按输入线路顺序给出对象 `{lane_id, load, opened}`；`load` 为占用托盘数，`opened` 与是否被任一接收订单使用一致。输入合法但无订单可承运时，应成功输出全拒收的零费用计划。相同输入必须产生相同 JSON 字节。
+输出只能包含 `served_counts`、`total_cost`、`orders`、`lane_loads`。`served_counts` 必须含字符串键 `0`、`1`、`2` 及对应接收张数；`total_cost` 为整数。`orders` 按输入订单顺序给出对象 `{order_id, accepted, path}`；`accepted` 为布尔值，接收时 `path` 为线路 ID 数组，拒收时为空数组。`lane_loads` 按输入线路顺序给出对象 `{lane_id, load, opened}`；`load` 为占用托盘数，`opened` 与是否被任一接收订单使用一致。输入合法但无订单可承运时，应成功输出全拒收的零费用计划。相同输入必须产生相同计划。
 
-拒收或发布失败不得创建或改动目标文件，也不得留下临时产物。合法输入须在 20 秒内完成。测试环境仅提供随包 Python 运行时和离线测试依赖，不提供网络服务。
+拒收或发布失败不得创建或改动目标文件，也不得留下临时产物。验证器提供 Python 运行时和预装测试依赖；候选程序的输入与输出路径由命令行参数指定。
