@@ -2,7 +2,7 @@ schema_version = "1.3"
 
 [task]
 name = "qsc/cold-chain-fixed-charge-dispatch"
-description = "Recover a lexicographically prioritized whole-order cold-chain dispatch plan with shared lane capacities and one-time opening fees."
+description = "Recover a lexicographically prioritized whole-order cold-chain dispatch plan across two dispatch waves with wave-specific lane capacities and shift-wide opening fees."
 authors = [{ name = "QSC" }]
 keywords = ["network-optimization", "integer-programming", "priority-dispatch", "fixed-charge", "cold-chain"]
 

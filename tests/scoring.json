@@ -9,16 +9,17 @@
     "test_contract.py::test_dense_route_batch_uses_shared_capacity_and_global_tie_break"
   ],
   "tests": {
-    "test_contract.py::test_exhaustive_small_ledgers_match_independent_joint_enumeration": {"priority":"core","rationale":"joint path, whole-order, lexicographic service and cost optimum against an independent exhaustive oracle","weight":0.28},
+    "test_contract.py::test_exhaustive_small_ledgers_match_independent_joint_enumeration": {"priority":"core","rationale":"joint path, wave, whole-order, lexicographic service and cost optimum against an independent exhaustive oracle","weight":0.26},
     "test_contract.py::test_opening_fee_can_overrule_individually_cheapest_lanes": {"priority":"core","rationale":"global fixed-charge cost can change the preferred path set","weight":0.15},
     "test_contract.py::test_partial_capacity_assignment_prefers_feasible_order_subset": {"priority":"core","rationale":"joint capacity limits determine the lexicographically preferred accepted subset","weight":0.16},
+    "test_contract.py::test_dispatch_waves_have_separate_capacity_and_one_shift_opening_fee": {"priority":"core","rationale":"orders have distinct wave eligibility, capacities reset by wave, while activation remains shared across the full shift","weight":0.10},
     "test_contract.py::test_tie_break_is_stable_under_order_input_permutation": {"priority":"boundary","rationale":"equal objective order assignment uses order IDs rather than input order","weight":0.05},
     "test_contract.py::test_unreachable_order_is_rejected_without_changing_other_service": {"priority":"boundary","rationale":"unreachable orders are rejected while independent feasible service remains","weight":0.06},
-    "test_contract.py::test_output_shape_and_input_order_are_preserved": {"priority":"supporting","rationale":"output rows preserve their respective input order and exact public schema","weight":0.04},
-    "test_contract.py::test_identical_input_produces_identical_plan": {"priority":"supporting","rationale":"repeated identical requests produce the same public plan","weight":0.04},
-    "test_contract.py::test_rejects_duplicate_json_key_without_creating_output": {"priority":"recovery","rationale":"duplicate JSON object members are rejected before publication","weight":0.04},
+    "test_contract.py::test_output_shape_and_input_order_are_preserved": {"priority":"supporting","rationale":"output rows preserve their respective input order and exact public schema","weight":0.02},
+    "test_contract.py::test_identical_input_produces_identical_plan": {"priority":"supporting","rationale":"repeated identical requests produce the same public plan","weight":0.02},
+    "test_contract.py::test_rejects_duplicate_json_key_without_creating_output": {"priority":"recovery","rationale":"duplicate JSON object members are rejected before publication","weight":0.02},
     "test_contract.py::test_rejects_boolean_capacity_and_preserves_sentinel": {"priority":"recovery","rationale":"boolean capacity rejection preserves prior report bytes","weight":0.03},
-    "test_contract.py::test_rejects_fractional_integer_field": {"priority":"boundary","rationale":"integer-valued public fields and required transit/SLA schema reject floating or missing values","weight":0.04},
+    "test_contract.py::test_rejects_fractional_integer_field": {"priority":"boundary","rationale":"integer-valued capacities and required transit/SLA/wave schema reject floating or missing values","weight":0.02},
     "test_contract.py::test_rejects_duplicate_identifier_and_late_invalid_order_atomically": {"priority":"recovery","rationale":"identifier and late-record failures preserve target state and leave no temporary files","weight":0.06},
     "test_contract.py::test_atomic_replace_failure_preserves_old_report": {"priority":"recovery","rationale":"replacement failure preserves the old report and cleans staging output","weight":0.05}
   },

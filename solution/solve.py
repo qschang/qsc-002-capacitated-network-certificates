@@ -50,27 +50,27 @@ def validate(data):
     parsed_lanes = []
     adjacency = [[] for _ in nodes]
     for index, lane in enumerate(lanes):
-        if not isinstance(lane, dict) or set(lane) != {"lane_id", "from", "to", "capacity", "open_fee", "unit_cost", "transit_minutes"}:
+        if not isinstance(lane, dict) or set(lane) != {"lane_id", "from", "to", "early_capacity", "late_capacity", "open_fee", "unit_cost", "transit_minutes"}:
             raise ValueError("lane schema")
         lane_id, start, end = lane["lane_id"], lane["from"], lane["to"]
         if not isinstance(lane_id, str) or not IDENTIFIER.fullmatch(lane_id) or lane_id in lane_ids:
             raise ValueError("lane id")
         if not isinstance(start, str) or not isinstance(end, str) or start not in node_index or end not in node_index or start == end:
             raise ValueError("lane endpoints")
-        if not integer(lane["capacity"], 1, 32):
-            raise ValueError("lane capacity")
+        if not integer(lane["early_capacity"], 1, 32) or not integer(lane["late_capacity"], 1, 32):
+            raise ValueError("lane wave capacity")
         if not integer(lane["open_fee"], 0, 1_000_000) or not integer(lane["unit_cost"], 0, 1_000_000):
             raise ValueError("lane costs")
         if not integer(lane["transit_minutes"], 1, 1_440):
             raise ValueError("lane transit time")
         lane_ids.add(lane_id)
-        parsed = (lane_id, node_index[start], node_index[end], lane["capacity"], lane["open_fee"], lane["unit_cost"], lane["transit_minutes"])
+        parsed = (lane_id, node_index[start], node_index[end], lane["early_capacity"], lane["late_capacity"], lane["open_fee"], lane["unit_cost"], lane["transit_minutes"])
         parsed_lanes.append(parsed)
         adjacency[parsed[1]].append(index)
     order_ids = set()
     parsed_orders = []
     for order in orders:
-        if not isinstance(order, dict) or set(order) != {"order_id", "origin", "destination", "priority", "pallets", "sla_minutes"}:
+        if not isinstance(order, dict) or set(order) != {"order_id", "origin", "destination", "priority", "pallets", "sla_minutes", "allowed_waves"}:
             raise ValueError("order schema")
         order_id, start, end = order["order_id"], order["origin"], order["destination"]
         if not isinstance(order_id, str) or not IDENTIFIER.fullmatch(order_id) or order_id in order_ids:
@@ -81,8 +81,11 @@ def validate(data):
             raise ValueError("order terms")
         if not integer(order["sla_minutes"], 1, 10_080):
             raise ValueError("order SLA")
+        waves = order["allowed_waves"]
+        if not isinstance(waves, list) or not waves or any(wave not in ("early", "late") for wave in waves) or len(set(waves)) != len(waves):
+            raise ValueError("order waves")
         order_ids.add(order_id)
-        parsed_orders.append((order_id, node_index[start], node_index[end], order["priority"], order["pallets"], order["sla_minutes"]))
+        parsed_orders.append((order_id, node_index[start], node_index[end], order["priority"], order["pallets"], order["sla_minutes"], tuple(waves)))
     return nodes, parsed_lanes, parsed_orders, adjacency
 
 
@@ -98,7 +101,7 @@ def enumerate_paths(start, end, lanes, adjacency, sla_minutes):
         for lane_index in adjacency[node]:
             lane = lanes[lane_index]
             target = lane[2]
-            next_elapsed = elapsed + lane[6]
+            next_elapsed = elapsed + lane[7]
             if target in visited or next_elapsed > sla_minutes:
                 continue
             visited.add(target)
@@ -140,31 +143,34 @@ def optimize(lanes, orders, adjacency):
         )
 
         for path in paths[order_index]:
-            if any(loads[lane_index] + pallets > lanes[lane_index][3] for lane_index in path):
-                continue
-            next_loads = list(loads)
-            added_cost = 0
-            for lane_index in path:
-                lane = lanes[lane_index]
-                if loads[lane_index] == 0:
-                    added_cost += lane[4]
-                added_cost += pallets * lane[5]
-                next_loads[lane_index] += pallets
-            tail_counts, tail_cost, tail_descriptor, tail_paths = visit(position + 1, tuple(next_loads))
-            counts = list(tail_counts)
-            counts[priority] += 1
-            descriptor = tuple(lanes[lane_index][0] for lane_index in path)
-            candidate = (
-                tuple(counts),
-                tail_cost + added_cost,
-                (descriptor,) + tail_descriptor,
-                (path,) + tail_paths,
-            )
-            if better(candidate, best):
-                best = candidate
+            for wave_name in order[6]:
+                wave = 0 if wave_name == "early" else 1
+                wave_offset = wave * len(lanes)
+                if any(loads[wave_offset + lane_index] + pallets > lanes[lane_index][3 + wave] for lane_index in path):
+                    continue
+                next_loads = list(loads)
+                added_cost = 0
+                for lane_index in path:
+                    lane = lanes[lane_index]
+                    if loads[lane_index] + loads[len(lanes) + lane_index] == 0:
+                        added_cost += lane[5]
+                    added_cost += pallets * lane[6]
+                    next_loads[wave_offset + lane_index] += pallets
+                tail_counts, tail_cost, tail_descriptor, tail_paths = visit(position + 1, tuple(next_loads))
+                counts = list(tail_counts)
+                counts[priority] += 1
+                descriptor = (wave_name, tuple(lanes[lane_index][0] for lane_index in path))
+                candidate = (
+                    tuple(counts),
+                    tail_cost + added_cost,
+                    (descriptor,) + tail_descriptor,
+                    ((wave_name, path),) + tail_paths,
+                )
+                if better(candidate, best):
+                    best = candidate
         return best
 
-    counts, total_cost, _, ordered_paths = visit(0, tuple([0] * len(lanes)))
+    counts, total_cost, _, ordered_paths = visit(0, tuple([0] * (2 * len(lanes))))
     selected = [None] * len(orders)
     for position, order_index in enumerate(order_sequence):
         selected[order_index] = ordered_paths[position]
@@ -177,8 +183,10 @@ def compute(data):
     loads = [0] * len(lanes)
     for order_index, path in enumerate(selected):
         if path is not None:
-            for lane_index in path:
-                loads[lane_index] += orders[order_index][4]
+            wave_name, lane_path = path
+            offset = 0 if wave_name == "early" else len(lanes)
+            for lane_index in lane_path:
+                loads[offset + lane_index] += orders[order_index][4]
     return {
         "served_counts": {str(priority): counts[priority] for priority in range(3)},
         "total_cost": total_cost,
@@ -186,12 +194,13 @@ def compute(data):
             {
                 "order_id": order[0],
                 "accepted": selected[index] is not None,
-                "path": [] if selected[index] is None else [lanes[lane_index][0] for lane_index in selected[index]],
+                "wave": None if selected[index] is None else selected[index][0],
+                "path": [] if selected[index] is None else [lanes[lane_index][0] for lane_index in selected[index][1]],
             }
             for index, order in enumerate(orders)
         ],
         "lane_loads": [
-            {"lane_id": lane[0], "load": loads[index], "opened": loads[index] > 0}
+            {"lane_id": lane[0], "early_load": loads[index], "late_load": loads[len(lanes) + index], "opened": loads[index] + loads[len(lanes) + index] > 0}
             for index, lane in enumerate(lanes)
         ],
     }
