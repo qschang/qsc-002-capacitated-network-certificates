@@ -1,4 +1,5 @@
 import itertools
+import copy
 import json
 import os
 import random
@@ -15,13 +16,18 @@ def run(data, raw=None, sentinel=None):
         root = Path(temp)
         input_path, output_path = root / "input.json", root / "output.json"
         if raw is None:
+            data = copy.deepcopy(data)
+            data.setdefault("wave_energy_budget", {"early": 100_000, "late": 100_000})
             for lane in data.get("lanes", []):
                 lane.setdefault("early_capacity", lane.get("capacity", 1))
                 lane.setdefault("late_capacity", lane.get("capacity", 1))
                 lane.setdefault("transit_minutes", 1)
+                lane.setdefault("exposure_minutes", 0)
+                lane.setdefault("cooling_units_per_pallet", 0)
                 lane.pop("capacity", None)
             for order in data.get("orders", []):
                 order.setdefault("sla_minutes", 10_080)
+                order.setdefault("max_exposure_minutes", 10_080)
                 order.setdefault("allowed_waves", ["early", "late"])
         input_path.write_text(raw if raw is not None else json.dumps(data), encoding="utf-8")
         if sentinel is not None:
@@ -34,19 +40,20 @@ def run(data, raw=None, sentinel=None):
         return process, output, output_path.exists(), leftovers
 
 
-def all_paths(start, end, lanes, sla_minutes=10_080):
+def all_paths(start, end, lanes, sla_minutes=10_080, max_exposure_minutes=10_080):
     paths = []
 
-    def walk(node, seen, chosen, elapsed=0, sla_minutes=10_080):
+    def walk(node, seen, chosen, elapsed=0, exposure=0):
         if node == end:
             paths.append(tuple(chosen))
             return
         for lane in lanes:
             next_elapsed = elapsed + lane.get("transit_minutes", 1)
-            if lane["from"] == node and lane["to"] not in seen and next_elapsed <= sla_minutes:
-                walk(lane["to"], seen | {lane["to"]}, chosen + [lane["lane_id"]], next_elapsed, sla_minutes)
+            next_exposure = exposure + lane.get("exposure_minutes", 0)
+            if lane["from"] == node and lane["to"] not in seen and next_elapsed <= sla_minutes and next_exposure <= max_exposure_minutes:
+                walk(lane["to"], seen | {lane["to"]}, chosen + [lane["lane_id"]], next_elapsed, next_exposure)
 
-    walk(start, {start}, [], sla_minutes=sla_minutes)
+    walk(start, {start}, [])
     return paths
 
 
@@ -57,7 +64,7 @@ def exhaustive_plan(data):
         [None] + [
             (wave, path)
             for wave in order.get("allowed_waves", ["early", "late"])
-            for path in all_paths(order["origin"], order["destination"], data["lanes"], sla_minutes=order.get("sla_minutes", 10_080))
+            for path in all_paths(order["origin"], order["destination"], data["lanes"], sla_minutes=order.get("sla_minutes", 10_080), max_exposure_minutes=order.get("max_exposure_minutes", 10_080))
         ]
         for order in orders
     ]
@@ -67,6 +74,7 @@ def exhaustive_plan(data):
         loads = {wave: {lane_id: 0 for lane_id in lanes} for wave in ("early", "late")}
         counts = [0, 0, 0]
         cost = 0
+        energy = {"early": 0, "late": 0}
         feasible = True
         for order, choice in zip(orders, selected):
             if choice is None:
@@ -79,6 +87,10 @@ def exhaustive_plan(data):
                 if loads[wave][lane_id] > lane.get(f"{wave}_capacity", lane.get("capacity", 1)):
                     feasible = False
                 cost += order["pallets"] * lane["unit_cost"]
+                energy[wave] += order["pallets"] * lane.get("cooling_units_per_pallet", 0)
+        budget = data.get("wave_energy_budget", {"early": 100_000, "late": 100_000})
+        if any(energy[wave] > budget[wave] for wave in ("early", "late")):
+            feasible = False
         if not feasible:
             continue
         opened = {lane_id for wave in loads.values() for lane_id, load in wave.items() if load}
@@ -95,6 +107,7 @@ def assert_plan_consistent(data, result):
     lane_by_id = {lane["lane_id"]: lane for lane in data["lanes"]}
     order_by_id = {order["order_id"]: order for order in data["orders"]}
     loads = {wave: {lane_id: 0 for lane_id in lane_by_id} for wave in ("early", "late")}
+    energy = {"early": 0, "late": 0}
     opened = set()
     counts = [0, 0, 0]
     cost = 0
@@ -111,6 +124,7 @@ def assert_plan_consistent(data, result):
         counts[order["priority"]] += 1
         current = order["origin"]
         visited = {current}
+        exposure = 0
         for lane_id in path:
             lane = lane_by_id[lane_id]
             assert lane["from"] == current
@@ -118,13 +132,19 @@ def assert_plan_consistent(data, result):
             assert current not in visited
             visited.add(current)
             loads[wave][lane_id] += order["pallets"]
+            exposure += lane["exposure_minutes"]
+            energy[wave] += order["pallets"] * lane["cooling_units_per_pallet"]
             opened.add(lane_id)
             cost += order["pallets"] * lane["unit_cost"]
         assert sum(lane_by_id[lane_id].get("transit_minutes", 1) for lane_id in path) <= order.get("sla_minutes", 10_080)
+        assert exposure <= order["max_exposure_minutes"]
         assert current == order["destination"]
     cost += sum(lane_by_id[lane_id]["open_fee"] for lane_id in opened)
     assert result["served_counts"] == {str(i): counts[i] for i in range(3)}
     assert result["total_cost"] == cost
+    assert result["wave_energy_loads"] == energy
+    assert energy["early"] <= data["wave_energy_budget"]["early"]
+    assert energy["late"] <= data["wave_energy_budget"]["late"]
     assert len(result["lane_loads"]) == len(data["lanes"])
     for row, lane in zip(result["lane_loads"], data["lanes"]):
         lane_id = lane["lane_id"]
@@ -412,8 +432,53 @@ def test_unreachable_order_is_rejected_without_changing_other_service():
     assert [row["accepted"] for row in result["orders"]] == [True, False]
 
 
+def test_exposure_boundary_selects_a_feasible_route():
+    '''THERM-09: "exposure_minutes 之和不得超过该订单的 `max_exposure_minutes`。"'''
+    data = {
+        "nodes": ["S", "A", "T"],
+        "wave_energy_budget": {"early": 20, "late": 20},
+        "lanes": [
+            {"lane_id": "DIRECT", "from": "S", "to": "T", "early_capacity": 1, "late_capacity": 1, "open_fee": 0, "unit_cost": 0, "transit_minutes": 1, "exposure_minutes": 6, "cooling_units_per_pallet": 0},
+            {"lane_id": "SA", "from": "S", "to": "A", "early_capacity": 1, "late_capacity": 1, "open_fee": 2, "unit_cost": 1, "transit_minutes": 2, "exposure_minutes": 2, "cooling_units_per_pallet": 0},
+            {"lane_id": "AT", "from": "A", "to": "T", "early_capacity": 1, "late_capacity": 1, "open_fee": 3, "unit_cost": 1, "transit_minutes": 2, "exposure_minutes": 3, "cooling_units_per_pallet": 0},
+        ],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "sla_minutes": 4, "max_exposure_minutes": 5, "allowed_waves": ["early"]}],
+    }
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["orders"][0]["accepted"] is True
+    assert result["orders"][0]["path"] == ["SA", "AT"]
+    assert result["served_counts"] == {"0": 1, "1": 0, "2": 0}
+    assert result["total_cost"] == 7
+    assert result["wave_energy_loads"] == {"early": 0, "late": 0}
+
+
+def test_wave_energy_is_bounded_per_wave_and_shared_by_orders():
+    '''COOL-10: "每个波次的冷却能源用量，等于该波次所有接收订单逐单计算的 `pallets × 路径各线路 cooling_units_per_pallet 之和`，不得超过对应的 `wave_energy_budget`。"'''
+    data = {
+        "nodes": ["S", "T"],
+        "wave_energy_budget": {"early": 2, "late": 2},
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "early_capacity": 3, "late_capacity": 3, "open_fee": 7, "unit_cost": 5, "transit_minutes": 1, "exposure_minutes": 0, "cooling_units_per_pallet": 2}],
+        "orders": [
+            {"order_id": "P0-E", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "sla_minutes": 1, "max_exposure_minutes": 0, "allowed_waves": ["early"]},
+            {"order_id": "P1-E", "origin": "S", "destination": "T", "priority": 1, "pallets": 1, "sla_minutes": 1, "max_exposure_minutes": 0, "allowed_waves": ["early"]},
+            {"order_id": "P1-L", "origin": "S", "destination": "T", "priority": 1, "pallets": 1, "sla_minutes": 1, "max_exposure_minutes": 0, "allowed_waves": ["late"]},
+        ],
+    }
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["served_counts"] == {"0": 1, "1": 1, "2": 0}
+    assert [row["accepted"] for row in result["orders"]] == [True, False, True]
+    assert [row["wave"] for row in result["orders"]] == ["early", None, "late"]
+    assert result["wave_energy_loads"] == {"early": 2, "late": 2}
+    assert result["lane_loads"] == [{"lane_id": "L", "early_load": 1, "late_load": 1, "opened": True}]
+    assert result["total_cost"] == 17
+
+
 def test_output_shape_and_input_order_are_preserved():
-    '''VALID-05: "输出只能包含 `served_counts`、`total_cost`、`orders`、`lane_loads`。"'''
+    '''VALID-05: "输出只能包含 `served_counts`、`total_cost`、`orders`、`lane_loads`、`wave_energy_loads`。"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [
@@ -428,7 +493,7 @@ def test_output_shape_and_input_order_are_preserved():
     process, output, exists, leftovers = run(data)
     result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert set(result) == {"served_counts", "total_cost", "orders", "lane_loads"}
+    assert set(result) == {"served_counts", "total_cost", "orders", "lane_loads", "wave_energy_loads"}
     assert [row["order_id"] for row in result["orders"]] == ["Z-ORDER", "A-ORDER"]
     assert [row["lane_id"] for row in result["lane_loads"]] == ["Z", "A"]
 
@@ -468,13 +533,13 @@ def test_rejects_boolean_capacity_and_preserves_sentinel():
 
 def test_rejects_fractional_integer_field():
     '''VALID-05: "两个波次容量均为 1 至 32 的整数"'''
-    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1.0,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"allowed_waves":["early"]}]}'
+    raw = '{"nodes":["S","T"],"wave_energy_budget":{"early":10,"late":10},"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1.0,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1,"exposure_minutes":0,"cooling_units_per_pallet":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"max_exposure_minutes":1,"allowed_waves":["early"]}]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
-    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1.5}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"allowed_waves":["early"]}]}'
+    raw = '{"nodes":["S","T"],"wave_energy_budget":{"early":10,"late":10},"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1.5,"exposure_minutes":0,"cooling_units_per_pallet":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"max_exposure_minutes":1,"allowed_waves":["early"]}]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
-    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"allowed_waves":[]} ]}'
+    raw = '{"nodes":["S","T"],"wave_energy_budget":{"early":10,"late":10},"lanes":[{"lane_id":"L","from":"S","to":"T","early_capacity":1,"late_capacity":1,"open_fee":0,"unit_cost":0,"transit_minutes":1,"exposure_minutes":0,"cooling_units_per_pallet":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1,"sla_minutes":1,"max_exposure_minutes":1,"allowed_waves":[]} ]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
 
@@ -504,8 +569,9 @@ def test_atomic_replace_failure_preserves_old_report(monkeypatch):
 
     data = {
         "nodes": ["S", "T"],
-        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0}],
-        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1}],
+        "wave_energy_budget": {"early": 10, "late": 10},
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "early_capacity": 1, "late_capacity": 1, "open_fee": 0, "unit_cost": 0, "transit_minutes": 1, "exposure_minutes": 0, "cooling_units_per_pallet": 0}],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "sla_minutes": 1, "max_exposure_minutes": 1, "allowed_waves": ["early"]}],
     }
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
