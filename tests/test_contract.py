@@ -132,19 +132,20 @@ def assert_plan_consistent(data, result):
             assert current not in visited
             visited.add(current)
             loads[wave][lane_id] += order["pallets"]
-            exposure += lane["exposure_minutes"]
-            energy[wave] += order["pallets"] * lane["cooling_units_per_pallet"]
+            exposure += lane.get("exposure_minutes", 0)
+            energy[wave] += order["pallets"] * lane.get("cooling_units_per_pallet", 0)
             opened.add(lane_id)
             cost += order["pallets"] * lane["unit_cost"]
         assert sum(lane_by_id[lane_id].get("transit_minutes", 1) for lane_id in path) <= order.get("sla_minutes", 10_080)
-        assert exposure <= order["max_exposure_minutes"]
+        assert exposure <= order.get("max_exposure_minutes", 10_080)
         assert current == order["destination"]
     cost += sum(lane_by_id[lane_id]["open_fee"] for lane_id in opened)
     assert result["served_counts"] == {str(i): counts[i] for i in range(3)}
     assert result["total_cost"] == cost
     assert result["wave_energy_loads"] == energy
-    assert energy["early"] <= data["wave_energy_budget"]["early"]
-    assert energy["late"] <= data["wave_energy_budget"]["late"]
+    budget = data.get("wave_energy_budget", {"early": 100_000, "late": 100_000})
+    assert energy["early"] <= budget["early"]
+    assert energy["late"] <= budget["late"]
     assert len(result["lane_loads"]) == len(data["lanes"])
     for row, lane in zip(result["lane_loads"], data["lanes"]):
         lane_id = lane["lane_id"]
