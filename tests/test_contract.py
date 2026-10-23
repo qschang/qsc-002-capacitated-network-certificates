@@ -12,39 +12,53 @@ def run(d, sentinel=None):
     return r,(o.read_bytes() if o.exists() else None),sentinel,leftovers,o.exists()
 def base(): return {'nodes':['s','a','b','t'],'edges':[{'u':'s','v':'a','capacity':3,'cost':2},{'u':'s','v':'a','capacity':2,'cost':1},{'u':'a','v':'t','capacity':4,'cost':2},{'u':'s','v':'b','capacity':5,'cost':1},{'u':'b','v':'t','capacity':5,'cost':3}], 'source':'s','sink':'t'}
 def test_parallel_edges_and_cut_certificate():
-  """AXIS-FLOW: "把每条边分别计入后的最大可行流" and the cut certificate."""
+  '''AXIS-FLOW: "允许平行边和自环。" and the cut certificate.'''
   r,b,_,left,exists=run(base()); assert r.returncode==0; x=json.loads(b); assert abs(x['max_flow']-9)<1e-12 and abs(x['max_flow']-x['min_cut_capacity'])<1e-12; assert left==[] and exists
 def test_self_loop_is_neutral_to_flow_and_path():
-  """FLOW-01: "允许平行边和自环。"""
+  '''FLOW-01: "允许平行边和自环。"'''
   a=base(); a['edges'].append({'u':'a','v':'a','capacity':100,'cost':0}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
 def test_negative_cost_path_and_lexicographic_tie_break():
-  """AXIS-PATH: "没有可达负成本环时，负成本边是合法输入；"""
+  '''AXIS-PATH: "没有可达负成本环时，负成本边是合法输入；"'''
   a=base(); a['edges']=[{'u':'s','v':'b','capacity':1,'cost':-1},{'u':'b','v':'t','capacity':1,'cost':2},{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'t','capacity':1,'cost':1}]; x=json.loads(run(a)[1]); assert x['shortest_path_cost']==1 and x['shortest_path']==['s','a','t']
 def test_unreachable_sink_returns_null_certificates():
-  """PATH-02: "若 `sink` 不可达，两者都使用 `null`。"""
+  '''PATH-02: "若 `sink` 不可达，两者都使用 `null`。"'''
   a=base(); a['edges']=[]; x=json.loads(run(a)[1]); assert x['shortest_path'] is None and x['shortest_path_cost'] is None
 def test_rejects_negative_cycle_atomically():
-  """AXIS-REJECTION: "若从 `source` 可达负成本环，则输入无效。"""
+  '''AXIS-REJECTION: "若在从 `source` 沿正容量边可达的子图中存在负成本环，则输入无效。"'''
   a=base(); a['edges'] += [{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'s','capacity':1,'cost':-2}]; r,b,_,left,exists=run(a)
   assert r.returncode!=0 and b is None
   assert left == [] and not exists and 'report' not in left
 def test_late_invalid_edge_preserves_sentinel():
-  """VALID-03: "且不得创建或修改目标文件。"""
+  '''VALID-03: "且不得创建或修改目标文件。"'''
   a=base(); a['edges'].append({'u':'x','v':'t','capacity':1,'cost':0}); sent=b'keep'; r,b,s,left,exists=run(a,sent)
   assert r.returncode!=0 and b==s
   assert left == [] and exists and 'report' not in left
 def test_node_order_only_changes_sorted_projection():
-  """AXIS-CERTIFICATE: "并按输入节点顺序排列。"""
+  '''AXIS-CERTIFICATE: "并按输入节点顺序排列。"'''
   a=base(); b=dict(a); b['nodes']=['t','b','a','s']; x=json.loads(run(a)[1]); y=json.loads(run(b)[1]); assert x['max_flow']==y['max_flow'] and y['source_side']==['a','s']
 def test_flow_cut_values_match_on_disconnected_components():
-  """CERT-04: "两者必须满足相对误差 `1e-9`、绝对误差 `1e-12` 的容差要求。"""
+  '''CERT-04: "两者必须满足相对误差 `1e-9`、绝对误差 `1e-12` 的容差要求。"'''
   a=base(); a['nodes'] += ['z']; x=json.loads(run(a)[1]); assert x['max_flow']==x['min_cut_capacity']
 def test_zero_capacity_edges_are_ignored():
-  """FLOW-01: "容量必须是大于等于零的有限数"""
-  a=base(); a['nodes'].append('z'); a['edges'].append({'u':'s','v':'z','capacity':0,'cost':-10}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9 and x['shortest_path_cost']==3
+  '''FLOW-01: "容量为零的边不参与供给或路线计算。"'''
+  a=base(); a['edges'].append({'u':'s','v':'t','capacity':0,'cost':-10}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9 and x['shortest_path_cost']==3
+
+def test_layered_network_scales_with_exponential_path_count():
+  '''PATH-03: "至少包含 64 个节点和 180 条边的网络；这类输入应在 20 秒内完成。"'''
+  layers=[[f'L{level:02d}{label}' for label in 'ABC'] for level in range(20)]
+  nodes=['S']+[node for layer in layers for node in layer]+['T','X','Y']; edges=[]
+  edges += [{'u':'S','v':node,'capacity':1,'cost':0} for node in layers[0]]
+  for previous,current in zip(layers,layers[1:]):
+    edges += [{'u':u,'v':v,'capacity':1,'cost':0} for u in previous for v in current]
+  edges += [{'u':node,'v':'T','capacity':1,'cost':0} for node in layers[-1]]
+  edges += [{'u':'S','v':node,'capacity':0,'cost':0} for node in layers[0]]
+  assert len(nodes)==64 and len(edges)==180
+  r,b,_,left,exists=run({'nodes':nodes,'edges':edges,'source':'S','sink':'T'}); assert r.returncode==0 and left==[] and exists
+  x=json.loads(b); assert x['max_flow']==3 and x['min_cut_capacity']==3 and x['source_side']==['S']
+  assert x['shortest_path_cost']==0 and x['shortest_path']==['S']+[layer[0] for layer in layers]+['T']
 
 def test_atomic_replace_failure_preserves_existing_destination():
-  """PUB-02: "发生任何内部错误时，程序必须以非零状态退出，且不得创建或修改目标文件。"""
+  '''PUB-02: "发生任何内部错误时，程序必须以非零状态退出，且不得创建或修改目标文件。"'''
   with tempfile.TemporaryDirectory() as td:
     p=Path(td); i=p/'i.json'; o=p/'o.json'; i.write_text(json.dumps(base()),encoding='utf-8'); sentinel=b'previous-result\x00'; o.write_bytes(sentinel)
     spec=importlib.util.spec_from_file_location('candidate_solver',APP); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -58,41 +72,41 @@ def test_atomic_replace_failure_preserves_existing_destination():
     assert rc!=0 and o.read_bytes()==sentinel
     assert sorted(q.name for q in p.iterdir())==['i.json','o.json']
 def test_invalid_boolean_capacity_rejected():
-  """VALID-03: "布尔值不得当作数值。"""
+  '''VALID-03: "布尔值不得当作数值。"'''
   a=base(); a['edges'][0]['capacity']=True; r,b,_,left,exists=run(a)
   assert r.returncode!=0 and b is None
   assert left == [] and not exists and 'report' not in left
 def test_output_has_exact_public_keys():
-  """CERT-04: "输出对象必须且只能包含 `max_flow`、`min_cut_capacity`、`source_side`、`shortest_path_cost` 和 `shortest_path` 五个字段。"""
+  '''CERT-04: "输出对象必须且只能包含 `max_flow`、`min_cut_capacity`、`source_side`、`shortest_path_cost` 和 `shortest_path` 五个字段。"'''
   x=json.loads(run(base())[1]); assert set(x)=={'max_flow','min_cut_capacity','source_side','shortest_path_cost','shortest_path'}
 
 def test_invalid_top_level_preserves_absent_destination_and_no_artifacts():
-  """VALID-03: "输入结构、数值边界、路径与割证书、确定性排序、误差容差以及跨运行发布状态都属于公开契约的一部分。"""
+  '''VALID-03: "输入结构、数值边界、路径与割证书、确定性排序、误差容差以及跨运行发布状态都属于公开契约的一部分。"'''
   r,b,_,left,exists=run({'nodes':[],'edges':[],'source':'s','sink':'t'})
   assert r.returncode!=0 and b is None
   assert left == [] and not exists and 'report' not in left
 
 def test_invalid_cost_preserves_existing_sentinel_byte_for_byte():
-  """VALID-03: "所有数值都必须有限，布尔值不得当作数值。"""
+  '''VALID-03: "所有数值都必须有限，布尔值不得当作数值。"'''
   a=base(); a['edges'][0]['cost']=True; sent=b'unchanged\x00'; r,b,s,left,exists=run(a,sent)
   assert r.returncode!=0 and b==s
   assert left == [] and exists and 'report' not in left
 
 def test_duplicate_json_key_rejected_atomically():
-  """VALID-04: "输入对象必须且只能包含 `nodes`、`edges`、`source` 和 `sink` 四个字段。"""
+  '''VALID-04: "输入对象必须且只能包含 `nodes`、`edges`、`source` 和 `sink` 四个字段。"'''
   with tempfile.TemporaryDirectory() as td:
     p=Path(td); i=p/'i.json'; o=p/'o.json'; i.write_text('{"nodes":["s","t"],"nodes":["s","t"],"edges":[],"source":"s","sink":"t"}',encoding='utf-8')
     r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
     assert r.returncode!=0 and not o.exists() and list(p.iterdir())==[i]
 
 def test_late_invalid_record_does_not_publish_prefix_or_checkpoint():
-  """VALID-03: "只有在校验和计算全部完成后，才允许发布合法结果。"""
+  '''VALID-03: "只有在校验和计算全部完成后，才允许发布合法结果。"'''
   a=base(); a['edges']=a['edges']+[{'u':'s','v':'t','capacity':float('nan'),'cost':0}]; r,b,_,left,exists=run(a)
   assert r.returncode!=0 and b is None
   assert left == [] and not exists and 'report' not in left
 
 def test_released_rejected_released_state_matrix():
-  """AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"""
+  '''AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"'''
   states = ['released', 'rejected', 'released']
   assert states == ['released', 'rejected', 'released']
   with tempfile.TemporaryDirectory() as td:
@@ -105,7 +119,7 @@ def test_released_rejected_released_state_matrix():
     assert third.returncode==0 and o.read_bytes()==first_bytes
 
 def test_rejected_released_rejected_state_matrix():
-  """AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"""
+  '''AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"'''
   states = ['rejected', 'released', 'rejected']
   assert states == ['rejected', 'released', 'rejected']
   with tempfile.TemporaryDirectory() as td:

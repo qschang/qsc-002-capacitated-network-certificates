@@ -52,26 +52,31 @@ def shortest(nodes,s,t,edges):
     n=len(nodes); d=[float('inf')]*n; d[s]=0.0
     for _ in range(n-1):
         changed=False
-        for u,v,_c,w in edges:
-            if u == v:
-                continue
-            if d[u]!=float('inf') and d[v]>d[u]+w+1e-15: d[v]=d[u]+w; changed=True
+        for u,v,c,w in edges:
+            if c > 0 and d[u]!=float('inf') and d[v]>d[u]+w: d[v]=d[u]+w; changed=True
         if not changed: break
-    for u,v,_c,w in edges:
-        if u == v:
-            continue
-        if d[u]!=float('inf') and d[v]>d[u]+w+1e-12: reject('reachable negative cycle')
-    best=None
-    def visit(u,path,cost):
-        nonlocal best
-        if u==t:
-            cand=(cost,tuple(nodes[i] for i in path)); best=cand if best is None or cand<best else best; return
-        for a,b,_c,w in edges:
-            if a == b:
-                continue
-            if a==u and b not in path: visit(b,path+[b],cost+w)
-    visit(s,[s],0.0)
-    return (None,None) if best is None else (best[0],list(best[1]))
+    for u,v,c,w in edges:
+        if c > 0 and d[u]!=float('inf') and d[v]>d[u]+w: reject('reachable negative cycle')
+    if d[t] == float('inf'): return None,None
+    tight=[{} for _ in range(n)]
+    for u,v,c,w in edges:
+        if c > 0 and d[u]!=float('inf') and d[u]+w==d[v]:
+            tight[u][v]=min(w,tight[u].get(v,float('inf')))
+    def reaches_sink(start,blocked):
+        seen={start}; queue=[start]
+        for u in queue:
+            if u==t: return True
+            for v in tight[u]:
+                if v not in blocked and v not in seen: seen.add(v); queue.append(v)
+        return False
+    path=[s]; used={s}; cost=0.0; u=s
+    while u!=t:
+        next_node=None
+        for v in sorted(tight[u],key=lambda i:nodes[i]):
+            if v not in used and reaches_sink(v,used): next_node=v; break
+        if next_node is None: reject('shortest path reconstruction failed')
+        cost+=tight[u][next_node]; u=next_node; path.append(u); used.add(u)
+    return cost,[nodes[i] for i in path]
 def compute(value):
     nodes,s,t,edges=validate(value); mf,reach,cut=flow_cut(len(nodes),s,t,edges)
     if abs(mf-cut)>1e-9*max(1.0,abs(cut))+1e-12: reject('flow cut mismatch')
