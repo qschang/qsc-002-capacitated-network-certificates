@@ -189,7 +189,7 @@ def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
 def test_dense_route_batch_uses_shared_capacity_and_global_tie_break():
     '''CAP-02/FIX-03/TIE-04: "所有订单共用同一班次的线路容量。"'''
     orders = [
-        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": i // 2, "pallets": 4}
+        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": i // 2, "pallets": 4, "allowed_waves": ["early"]}
         for i in range(6)
     ]
     lane_specs = [
@@ -384,8 +384,8 @@ def test_tie_break_is_stable_under_order_input_permutation():
         {"lane_id": "B", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
     ]
     orders = [
-        {"order_id": "X", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
-        {"order_id": "Y", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
+        {"order_id": "X", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "allowed_waves": ["early"]},
+        {"order_id": "Y", "origin": "S", "destination": "T", "priority": 0, "pallets": 1, "allowed_waves": ["early"]},
     ]
     first, out_first, exists_first, _ = run({"nodes": ["S", "T"], "lanes": lanes, "orders": orders})
     second, out_second, exists_second, _ = run({"nodes": ["S", "T"], "lanes": lanes, "orders": list(reversed(orders))})
