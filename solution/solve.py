@@ -1,95 +1,245 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json, math, os, sys, tempfile
 
-def finite(x): return isinstance(x,(int,float)) and not isinstance(x,bool) and math.isfinite(x)
-def reject(message): raise ValueError(message)
-def _pairs(pairs):
-    value={}
-    for key,item in pairs:
-        if key in value: reject('duplicate key')
-        value[key]=item
-    return value
-def read_input(path):
-    with open(path,encoding='utf-8') as f: value=json.load(f, object_pairs_hook=_pairs)
-    if not isinstance(value,dict) or set(value)!={'nodes','edges','source','sink'}: reject('top-level schema')
-    return value
-def validate(value):
-    nodes,raw,source,sink=value['nodes'],value['edges'],value['source'],value['sink']
-    if not isinstance(nodes,list) or not nodes or any(not isinstance(x,str) or not x for x in nodes) or len(set(nodes))!=len(nodes): reject('nodes')
-    if not isinstance(raw,list) or source not in nodes or sink not in nodes or source==sink: reject('terminals')
-    idx={x:i for i,x in enumerate(nodes)}; edges=[]
-    for e in raw:
-        if not isinstance(e,dict) or set(e)!={'u','v','capacity','cost'}: reject('edge keys')
-        if e['u'] not in idx or e['v'] not in idx or not finite(e['capacity']) or e['capacity']<0 or not finite(e['cost']): reject('edge values')
-        edges.append((idx[e['u']],idx[e['v']],float(e['capacity']),float(e['cost'])))
-    return nodes,idx[source],idx[sink],edges
-def flow_cut(n,s,t,edges):
-    g=[[] for _ in range(n)]
-    for k,(u,v,c,_w) in enumerate(edges):
-        if u == v:
-            continue
-        a=[v,c,None,k]; b=[u,0.0,a,-1]; a[2]=b; g[u].append(a); g[v].append(b)
-    total=0.0
+import json
+import math
+import os
+import sys
+import tempfile
+
+
+def fail(message: str) -> None:
+    raise ValueError(message)
+
+
+def pairs_no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def finite_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def load(path):
+    with open(path, "r", encoding="utf-8") as stream:
+        return json.load(stream, object_pairs_hook=pairs_no_duplicates)
+
+
+def validate(data):
+    if not isinstance(data, dict) or set(data) != {"nodes", "edges", "source", "sink"}:
+        fail("input schema")
+    nodes, edges = data["nodes"], data["edges"]
+    if not isinstance(nodes, list) or not 2 <= len(nodes) <= 2048:
+        fail("node count")
+    if any(not isinstance(node, str) or not node for node in nodes) or len(set(nodes)) != len(nodes):
+        fail("nodes")
+    if not isinstance(edges, list) or len(edges) > 16384:
+        fail("edge count")
+    index = {node: pos for pos, node in enumerate(nodes)}
+    source, sink = data["source"], data["sink"]
+    if source not in index or sink not in index or source == sink:
+        fail("terminals")
+    parsed = []
+    for edge in edges:
+        if not isinstance(edge, dict) or set(edge) != {"u", "v", "capacity", "cost"}:
+            fail("edge schema")
+        u, v, capacity, cost = edge["u"], edge["v"], edge["capacity"], edge["cost"]
+        if u not in index or v not in index:
+            fail("edge endpoint")
+        if not finite_number(capacity) or not 0 <= capacity <= 1e9:
+            fail("capacity")
+        if not finite_number(cost) or abs(cost) > 1e6:
+            fail("cost")
+        parsed.append((index[u], index[v], float(capacity), float(cost)))
+    return nodes, index[source], index[sink], parsed
+
+
+def reject_negative_cycle(n, edges):
+    distance = [0.0] * n
+    active = [(u, v, cost) for u, v, capacity, cost in edges if capacity > 0.0]
+    for iteration in range(n):
+        changed = False
+        for u, v, cost in active:
+            candidate = distance[u] + cost
+            if candidate < distance[v]:
+                distance[v] = candidate
+                changed = True
+        if not changed:
+            return
+        if iteration == n - 1:
+            fail("negative-cost cycle")
+
+
+def add_arc(graph, u, v, capacity, cost):
+    forward = [v, capacity, cost, len(graph[v])]
+    reverse = [u, 0.0, -cost, len(graph[u])]
+    graph[u].append(forward)
+    graph[v].append(reverse)
+    return forward
+
+
+def shortest_residual_path(graph, source, sink):
+    n = len(graph)
+    distance = [math.inf] * n
+    parent = [None] * n
+    distance[source] = 0.0
+    for _ in range(n - 1):
+        changed = False
+        for u in range(n):
+            if distance[u] == math.inf:
+                continue
+            for edge_id, edge in enumerate(graph[u]):
+                v, residual, cost, _reverse_id = edge
+                if residual <= 0.0:
+                    continue
+                candidate = distance[u] + cost
+                if candidate < distance[v]:
+                    distance[v] = candidate
+                    parent[v] = (u, edge_id)
+                    changed = True
+        if not changed:
+            break
+    if distance[sink] == math.inf:
+        return None, None
+    path = []
+    current = sink
+    seen = set()
+    while current != source:
+        if current in seen or parent[current] is None:
+            fail("residual predecessor chain")
+        seen.add(current)
+        u, edge_id = parent[current]
+        path.append((u, edge_id))
+        current = u
+    path.reverse()
+    return path, distance[sink]
+
+
+def min_cost_max_flow(n, source, sink, edges):
+    graph = [[] for _ in range(n)]
+    originals = []
+    for u, v, capacity, cost in edges:
+        if capacity > 0.0 and u != v:
+            originals.append(add_arc(graph, u, v, capacity, cost))
+        else:
+            originals.append(None)
     while True:
-        p=[None]*n; p[s]=(-1,None); q=[s]
-        for u in q:
-            for a in g[u]:
-                if a[1]>0.0 and p[a[0]] is None: p[a[0]]=(u,a); q.append(a[0])
-        if p[t] is None: break
-        z=float('inf'); v=t
-        while v!=s: u,a=p[v]; z=min(z,a[1]); v=u
-        v=t
-        while v!=s: u,a=p[v]; a[1]-=z; a[2][1]+=z; v=u
-        total+=z
-    reach={s}; q=[s]
-    for u in q:
-        for a in g[u]:
-            if a[1]>0.0 and a[0] not in reach: reach.add(a[0]); q.append(a[0])
-    cut=sum(c for u,v,c,_w in edges if u in reach and v not in reach)
-    return total,reach,cut
-def shortest(nodes,s,t,edges):
-    n=len(nodes); d=[float('inf')]*n; d[s]=0.0
-    for _ in range(n-1):
-        changed=False
-        for u,v,c,w in edges:
-            if c > 0 and d[u]!=float('inf') and d[v]>d[u]+w: d[v]=d[u]+w; changed=True
-        if not changed: break
-    for u,v,c,w in edges:
-        if c > 0 and d[u]!=float('inf') and d[v]>d[u]+w: reject('reachable negative cycle')
-    if d[t] == float('inf'): return None,None
-    tight=[{} for _ in range(n)]
-    for u,v,c,w in edges:
-        if c > 0 and d[u]!=float('inf') and d[u]+w==d[v]:
-            tight[u][v]=min(w,tight[u].get(v,float('inf')))
-    def reaches_sink(start,blocked):
-        seen={start}; queue=[start]
-        for u in queue:
-            if u==t: return True
-            for v in tight[u]:
-                if v not in blocked and v not in seen: seen.add(v); queue.append(v)
-        return False
-    path=[s]; used={s}; cost=0.0; u=s
-    while u!=t:
-        next_node=None
-        for v in sorted(tight[u],key=lambda i:nodes[i]):
-            if v not in used and reaches_sink(v,used): next_node=v; break
-        if next_node is None: reject('shortest path reconstruction failed')
-        cost+=tight[u][next_node]; u=next_node; path.append(u); used.add(u)
-    return cost,[nodes[i] for i in path]
-def compute(value):
-    nodes,s,t,edges=validate(value); mf,reach,cut=flow_cut(len(nodes),s,t,edges)
-    if abs(mf-cut)>1e-9*max(1.0,abs(cut))+1e-12: reject('flow cut mismatch')
-    pc,path=shortest(nodes,s,t,edges)
-    return {'max_flow':mf,'min_cut_capacity':cut,'source_side':[nodes[i] for i in range(len(nodes)) if i in reach],'shortest_path_cost':pc,'shortest_path':path}
-def main():
-    if len(sys.argv)!=3: return 2
-    tmp=None
+        path, _path_cost = shortest_residual_path(graph, source, sink)
+        if path is None:
+            break
+        amount = math.inf
+        for u, edge_id in path:
+            amount = min(amount, graph[u][edge_id][1])
+        if not amount > 0.0 or not math.isfinite(amount):
+            fail("invalid augmentation")
+        for u, edge_id in path:
+            edge = graph[u][edge_id]
+            reverse = graph[edge[0]][edge[3]]
+            edge[1] -= amount
+            reverse[1] += amount
+    flows = []
+    for edge, original in zip(edges, originals):
+        flows.append(0.0 if original is None else edge[2] - original[1])
+    return graph, flows
+
+
+def residual_potentials(graph):
+    n = len(graph)
+    distance = [0.0] * n
+    for iteration in range(n):
+        changed = False
+        for u in range(n):
+            for v, residual, cost, _reverse_id in graph[u]:
+                if residual <= 0.0:
+                    continue
+                candidate = distance[u] + cost
+                if candidate < distance[v]:
+                    distance[v] = candidate
+                    changed = True
+        if not changed:
+            return distance
+        if iteration == n - 1:
+            fail("negative residual cycle")
+    return distance
+
+
+def residual_source_side(graph, source):
+    seen = {source}
+    queue = [source]
+    for u in queue:
+        for v, residual, _cost, _reverse_id in graph[u]:
+            if residual > 0.0 and v not in seen:
+                seen.add(v)
+                queue.append(v)
+    return seen
+
+
+def compute(data):
+    nodes, source, sink, edges = validate(data)
+    n = len(nodes)
+    reject_negative_cycle(n, edges)
+    graph, flows = min_cost_max_flow(n, source, sink, edges)
+    balances = [0.0] * n
+    for (u, v, _capacity, _cost), flow in zip(edges, flows):
+        balances[u] += flow
+        balances[v] -= flow
+    max_flow = math.fsum(flow for (u, v, _capacity, _cost), flow in zip(edges, flows) if u == source) - math.fsum(
+        flow for (u, v, _capacity, _cost), flow in zip(edges, flows) if v == source
+    )
+    min_cost = math.fsum(flow * edge[3] for edge, flow in zip(edges, flows))
+    source_side_set = residual_source_side(graph, source)
+    cut = math.fsum(capacity for u, v, capacity, _cost in edges if u in source_side_set and v not in source_side_set)
+    if abs(balances[source] - max_flow) > 1e-12 + 1e-9 * max(abs(balances[source]), abs(max_flow)):
+        fail("source balance")
+    if abs(balances[sink] + max_flow) > 1e-12 + 1e-9 * max(abs(balances[sink]), abs(max_flow)):
+        fail("sink balance")
+    if abs(max_flow - cut) > 1e-12 + 1e-9 * max(abs(max_flow), abs(cut)):
+        fail("flow-cut mismatch")
+    potentials = residual_potentials(graph)
+    return {
+        "max_flow": max_flow,
+        "min_cost": min_cost,
+        "edge_flows": flows,
+        "min_cut_capacity": cut,
+        "source_side": [node for i, node in enumerate(nodes) if i in source_side_set],
+        "node_potentials": potentials,
+    }
+
+
+def publish(path, result):
+    directory = os.path.dirname(os.path.abspath(path))
+    descriptor, temporary = tempfile.mkstemp(prefix=".network-plan-", dir=directory)
     try:
-        out=compute(read_input(sys.argv[1])); dst=os.path.abspath(sys.argv[2]); fd,tmp=tempfile.mkstemp(prefix='.network-certificate-',dir=os.path.dirname(dst) or '.')
-        with os.fdopen(fd,'w',encoding='utf-8') as f: json.dump(out,f,separators=(',',':'),allow_nan=False); f.write('\n'); f.flush(); os.fsync(f.fileno())
-        os.replace(tmp,dst); tmp=None; return 0
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(result, stream, separators=(",", ":"), allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def main():
+    if len(sys.argv) != 3:
+        return 2
+    try:
+        result = compute(load(sys.argv[1]))
+        publish(sys.argv[2], result)
+        return 0
     except Exception as exc:
-        if tmp and os.path.exists(tmp): os.unlink(tmp)
-        print(str(exc),file=sys.stderr); return 1
-if __name__=='__main__': raise SystemExit(main())
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

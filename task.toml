@@ -2,9 +2,9 @@ schema_version = "1.3"
 
 [task]
 name = "qsc/capacitated-network-certificates"
-description = "Produce independently checkable shortest-path and maximum-flow certificates for a directed capacitated network with parallel edges and signed costs."
+description = "Produce a minimum-cost maximum-throughput plan and independently checkable primal, cut, and residual-potential certificates for a directed transport network."
 authors = [{ name = "QSC" }]
-keywords = ["graph-algorithms", "maximum-flow", "shortest-path", "certificates", "multigraph"]
+keywords = ["network-optimization", "maximum-flow", "minimum-cost-flow", "duality", "multigraph"]
 
 [agent]
 timeout_sec = 3600
@@ -23,5 +23,5 @@ timeout_sec = 300
 [metadata]
 difficulty = "expert"
 category = "H.1 Mathematics"
-tags = ["discrete-graph", "flow-cut", "negative-cost-path"]
+tags = ["discrete-graph", "flow-cut", "primal-dual-certificate"]
 expert_time_estimate = "10h"

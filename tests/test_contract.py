@@ -1,220 +1,386 @@
-import importlib.util, json, os, subprocess, sys, tempfile, time
-from contextlib import redirect_stderr
-from io import StringIO
+import itertools
+import json
+import math
+import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
-APP=os.environ.get('APP','/app/solve.py')
-def run(d, sentinel=None):
-  with tempfile.TemporaryDirectory() as td:
-    p=Path(td); i=p/'i.json'; o=p/'o.json'; i.write_text(json.dumps(d),encoding='utf-8')
-    if sentinel is not None:o.write_bytes(sentinel)
-    r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    leftovers=[q.name for q in p.iterdir() if q.name != 'i.json' and q.name != 'o.json']
-    return r,(o.read_bytes() if o.exists() else None),sentinel,leftovers,o.exists()
-def run_raw(raw, sentinel=None):
-  with tempfile.TemporaryDirectory() as td:
-    p=Path(td); i=p/'i.json'; o=p/'o.json'; i.write_text(raw,encoding='utf-8')
-    if sentinel is not None:o.write_bytes(sentinel)
-    r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    leftovers=[q.name for q in p.iterdir() if q.name != 'i.json' and q.name != 'o.json']
-    return r,(o.read_bytes() if o.exists() else None),sentinel,leftovers,o.exists()
-def base(): return {'nodes':['s','a','b','t'],'edges':[{'u':'s','v':'a','capacity':3,'cost':2},{'u':'s','v':'a','capacity':2,'cost':1},{'u':'a','v':'t','capacity':4,'cost':2},{'u':'s','v':'b','capacity':5,'cost':1},{'u':'b','v':'t','capacity':5,'cost':3}], 'source':'s','sink':'t'}
-def test_parallel_edges_and_cut_certificate():
-  '''AXIS-FLOW: "允许平行边和自环。" and the cut certificate.'''
-  r,b,_,left,exists=run(base()); assert r.returncode==0; x=json.loads(b); assert abs(x['max_flow']-9)<1e-12 and abs(x['max_flow']-x['min_cut_capacity'])<1e-12; assert left==[] and exists
 
-def test_residual_rerouting_reaches_maximum_flow():
-  '''FLOW-02: "正确计算有向多重图的最大流与最小割证书"'''
-  a={'nodes':['s','a','b','x','y','t'],'source':'s','sink':'t','edges':[
-    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'s','v':'b','capacity':1,'cost':0},
-    {'u':'a','v':'x','capacity':1,'cost':0},{'u':'a','v':'y','capacity':1,'cost':0},
-    {'u':'b','v':'x','capacity':1,'cost':0},{'u':'x','v':'t','capacity':1,'cost':0},
-    {'u':'y','v':'t','capacity':1,'cost':0}]}
-  x=json.loads(run(a)[1]); assert x['max_flow']==2 and x['min_cut_capacity']==2 and x['source_side']==['s']
-def test_self_loop_is_neutral_to_flow_and_path():
-  '''FLOW-01: "允许平行边和自环。"'''
-  a=base(); a['edges'].append({'u':'a','v':'a','capacity':100,'cost':0}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
+APP = os.environ.get("APP", "/app/solve.py")
+TOL = 1e-12
 
-def test_rejects_reachable_negative_cost_self_loop_atomically():
-  '''PATH-01: "负成本正容量自环是可达负成本环，因此必须拒收。"'''
-  a={'nodes':['s','a','t'],'source':'s','sink':'t','edges':[
-    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'a','capacity':1,'cost':-0.25},
-    {'u':'a','v':'t','capacity':1,'cost':0}]}
-  r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None
-  assert left==[] and not exists
-  r,b,s,left,exists=run(a,b'prior-certificate'); assert r.returncode!=0 and b==s
-  assert left==[] and exists
-def test_negative_cost_path_and_lexicographic_tie_break():
-  '''AXIS-PATH: "没有可达负成本环时，负成本边是合法输入；"'''
-  a=base(); a['edges']=[{'u':'s','v':'b','capacity':1,'cost':-1},{'u':'b','v':'t','capacity':1,'cost':2},{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'t','capacity':1,'cost':1}]; x=json.loads(run(a)[1]); assert x['shortest_path_cost']==1 and x['shortest_path']==['s','a','t']
-def test_unreachable_sink_returns_null_certificates():
-  '''PATH-02: "若 `sink` 不可达，两者都使用 `null`。"'''
-  a=base(); a['edges']=[]; x=json.loads(run(a)[1]); assert x['shortest_path'] is None and x['shortest_path_cost'] is None
-def test_rejects_negative_cycle_atomically():
-  '''AXIS-REJECTION: "若在从 `source` 沿正容量边可达的子图中存在负成本环，则输入无效。"'''
-  a=base(); a['edges'] += [{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'s','capacity':1,'cost':-2}]; r,b,_,left,exists=run(a)
-  assert r.returncode!=0 and b is None
-  assert left == [] and not exists and 'report' not in left
-  r,b,s,left,exists=run(a,b'old-certificate'); assert r.returncode!=0 and b==s
-  assert left==[] and exists and 'report' not in left
 
-def test_rejects_source_reachable_cycle_disconnected_from_sink():
-  '''PATH-02: "若在从 `source` 沿正容量边可达的子图中存在负成本环，则输入无效。"'''
-  a={'nodes':['s','a','b','t'],'source':'s','sink':'t','edges':[
-    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'b','capacity':1,'cost':0},
-    {'u':'b','v':'a','capacity':1,'cost':-1},{'u':'s','v':'t','capacity':1,'cost':2}]}
-  r,b,_,left,exists=run(a,b'old-certificate'); assert r.returncode!=0 and b==b'old-certificate'
-  assert left==[] and exists
-  r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None
-  assert left==[] and not exists
+def run(data, sentinel=None, raw=None):
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        input_path, output_path = root / "input.json", root / "output.json"
+        input_path.write_text(raw if raw is not None else json.dumps(data), encoding="utf-8")
+        if sentinel is not None:
+            output_path.write_bytes(sentinel)
+        result = subprocess.run(
+            [sys.executable, APP, str(input_path), str(output_path)],
+            capture_output=True,
+            timeout=30,
+        )
+        leftovers = sorted(p.name for p in root.iterdir() if p not in (input_path, output_path))
+        output = output_path.read_bytes() if output_path.exists() else None
+        return result, output, leftovers, output_path.exists()
 
-def test_ignores_negative_cycle_without_positive_capacity_access():
-  '''PATH-02: "容量为零的边不参与供给或路线计算。"'''
-  a=base(); a['nodes'] += ['x','y']; a['edges'] += [
-    {'u':'s','v':'x','capacity':0,'cost':0},{'u':'x','v':'y','capacity':1,'cost':-2},
-    {'u':'y','v':'x','capacity':1,'cost':1}]
-  x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9
-  assert x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
-def test_late_invalid_edge_preserves_sentinel():
-  '''VALID-03: "且不得创建或修改目标文件。"'''
-  a=base(); a['edges'].append({'u':'x','v':'t','capacity':1,'cost':0}); sent=b'keep'; r,b,s,left,exists=run(a,sent)
-  assert r.returncode!=0 and b==s
-  assert left == [] and exists and 'report' not in left
-  r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None
-  assert left==[] and not exists and 'report' not in left
-def test_node_order_only_changes_sorted_projection():
-  '''AXIS-CERTIFICATE: "并按输入节点顺序排列。"'''
-  a=base(); b=dict(a); b['nodes']=['t','b','a','s']; x=json.loads(run(a)[1]); y=json.loads(run(b)[1]); assert x['max_flow']==y['max_flow'] and y['source_side']==['a','s']
-def test_flow_cut_values_match_on_disconnected_components():
-  '''CERT-04: "两者必须满足相对误差 `1e-9`、绝对误差 `1e-12` 的容差要求。"'''
-  a=base(); a['nodes'] += ['z']; x=json.loads(run(a)[1]); assert x['max_flow']==x['min_cut_capacity']
-def test_zero_capacity_edges_are_ignored():
-  '''FLOW-01: "容量为零的边不参与供给或路线计算。"'''
-  a=base(); a['edges'].append({'u':'s','v':'t','capacity':0,'cost':-10}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9 and x['shortest_path_cost']==3
 
-def test_arbitrarily_small_positive_capacity_contributes_to_flow_and_path():
-  '''FLOW-04: "任何大于零的有限容量都参与计算，不设正容量阈值。"'''
-  a={'nodes':['s','t'],'source':'s','sink':'t','edges':[{'u':'s','v':'t','capacity':1e-16,'cost':-2}]}
-  r,b,_,left,exists=run(a); x=json.loads(b)
-  assert r.returncode==0 and x['max_flow']==1e-16 and x['min_cut_capacity']==1e-16
-  assert x['source_side']==['s'] and x['shortest_path_cost']==-2 and x['shortest_path']==['s','t']
-  assert left==[] and exists
+def tolerance(a, b):
+    return TOL + 1e-9 * max(abs(a), abs(b))
 
-def test_tiny_positive_capacity_exposes_reachable_negative_cycle():
-  '''PATH-04: "沿任何正容量边可达" applies even when capacity is below 1e-12.'''
-  a={'nodes':['s','a','b','t'],'source':'s','sink':'t','edges':[
-    {'u':'s','v':'t','capacity':1,'cost':0},{'u':'s','v':'a','capacity':1e-16,'cost':0},
-    {'u':'a','v':'b','capacity':1,'cost':-2},{'u':'b','v':'a','capacity':1,'cost':1}]}
-  r,b,_,left,exists=run(a,b'previous'); assert r.returncode!=0 and b==b'previous'
-  assert left==[] and exists
 
-def test_large_network_meets_published_scale():
-  '''PATH-03: "程序至少应在该规模的网络上于 20 秒内完成，并按上述规则生成完整结果。"'''
-  layers=[[f'L{level:04d}{label}' for label in 'AB'] for level in range(1023)]
-  nodes=['S']+[node for layer in layers for node in layer]+['T']; forward=[]
-  forward += [{'u':'S','v':node,'capacity':1,'cost':-1} for node in layers[0]]
-  for level,(previous,current) in enumerate(zip(layers,layers[1:])):
-    cost=-1 if (level+1)%4==0 else 0
-    forward += [{'u':u,'v':v,'capacity':1,'cost':cost} for u in previous for v in current for _ in range(4)]
-  forward += [{'u':node,'v':'T','capacity':1,'cost':0} for node in layers[-1] for _ in range(15)]
-  edges=list(reversed(forward))
-  assert len(nodes)==2048 and len(edges)==16384
-  with tempfile.TemporaryDirectory() as td:
-    p=Path(td); i=p/'i.json'; o=p/'o.json'
-    i.write_text(json.dumps({'nodes':nodes,'edges':edges,'source':'S','sink':'T'}),encoding='utf-8')
-    started=time.monotonic(); r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=20); elapsed=time.monotonic()-started
-    assert r.returncode==0 and elapsed<20 and o.exists()
-    x=json.loads(o.read_bytes())
-    assert x['max_flow']==2 and x['min_cut_capacity']==2 and x['source_side']==['S']
-    assert x['shortest_path_cost']==-256 and x['shortest_path']==['S']+[layer[0] for layer in layers]+['T']
+def certificate_issues(data, result):
+    nodes = data["nodes"]
+    edges = data["edges"]
+    index = {node: i for i, node in enumerate(nodes)}
+    flows = result["edge_flows"]
+    potentials = result["node_potentials"]
+    if len(flows) != len(edges) or len(potentials) != len(nodes):
+        return ["vector lengths"]
+    balance = [0.0] * len(nodes)
+    cost_terms = []
+    issues = []
+    for edge, flow in zip(edges, flows):
+        u, v = index[edge["u"]], index[edge["v"]]
+        cap, cost = edge["capacity"], edge["cost"]
+        if not isinstance(flow, (int, float)) or isinstance(flow, bool) or not math.isfinite(flow):
+            issues.append("flow type")
+            continue
+        if flow < -tolerance(flow, 0.0) or flow > cap + tolerance(flow, cap):
+            issues.append("capacity bound")
+        balance[u] += flow
+        balance[v] -= flow
+        cost_terms.append(flow * cost)
+        forward = cost + potentials[u] - potentials[v]
+        reverse = -cost + potentials[v] - potentials[u]
+        dual_tol = 1e-9 * max(1.0, abs(cost), abs(potentials[u]), abs(potentials[v]))
+        if cap - flow > 0.0 and forward < -dual_tol:
+            issues.append("forward reduced cost")
+        if flow > 0.0 and reverse < -dual_tol:
+            issues.append("reverse reduced cost")
+    source, sink = index[data["source"]], index[data["sink"]]
+    if abs(balance[source] - result["max_flow"]) > tolerance(balance[source], result["max_flow"]):
+        issues.append("source conservation")
+    if abs(balance[sink] + result["max_flow"]) > tolerance(balance[sink], result["max_flow"]):
+        issues.append("sink conservation")
+    if any(abs(balance[i]) > tolerance(balance[i], 0.0) for i in range(len(nodes)) if i not in (source, sink)):
+        issues.append("intermediate conservation")
+    cost = math.fsum(cost_terms)
+    if abs(cost - result["min_cost"]) > tolerance(cost, result["min_cost"]):
+        issues.append("objective recomputation")
+    source_side = set(result["source_side"])
+    residual_reachable = {source}
+    queue = [source]
+    for u in queue:
+        for edge, flow in zip(edges, flows):
+            if edge["u"] == nodes[u] and edge["capacity"] - flow > 0.0:
+                v = index[edge["v"]]
+                if v not in residual_reachable:
+                    residual_reachable.add(v)
+                    queue.append(v)
+            if edge["v"] == nodes[u] and flow > 0.0:
+                v = index[edge["u"]]
+                if v not in residual_reachable:
+                    residual_reachable.add(v)
+                    queue.append(v)
+    expected_side = [node for i, node in enumerate(nodes) if i in residual_reachable]
+    if result["source_side"] != expected_side:
+        issues.append("residual reachable side")
+    cut = math.fsum(e["capacity"] for e in edges if e["u"] in source_side and e["v"] not in source_side)
+    if abs(cut - result["min_cut_capacity"]) > tolerance(cut, result["min_cut_capacity"]):
+        issues.append("cut recomputation")
+    if abs(result["max_flow"] - cut) > tolerance(result["max_flow"], cut):
+        issues.append("max-flow/min-cut equality")
+    return issues
 
-def test_atomic_replace_failure_preserves_existing_destination():
-  '''PUB-02: "发生任何内部错误时，程序必须以非零状态退出，且不得创建或修改目标文件。"'''
-  with tempfile.TemporaryDirectory() as td:
-    for label,sentinel in (('absent',None),('existing',b'previous-result\x00')):
-      p=Path(td)/label; p.mkdir(); i=p/'i.json'; o=p/'o.json'; i.write_text(json.dumps(base()),encoding='utf-8')
-      if sentinel is not None:o.write_bytes(sentinel)
-      spec=importlib.util.spec_from_file_location('candidate_solver',APP); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-      old_argv=sys.argv; original_replace=os.replace; sys.argv=[APP,str(i),str(o)]
-      def fail_replace(_src,_dst): raise OSError('injected replace failure')
-      try:
-        module.os.replace=fail_replace
-        with redirect_stderr(StringIO()): rc=module.main()
-      finally:
-        module.os.replace=original_replace; sys.argv=old_argv
-      assert rc!=0
-      if sentinel is None: assert not o.exists()
-      else: assert o.read_bytes()==sentinel
-      assert sorted(q.name for q in p.iterdir())==(['i.json'] if sentinel is None else ['i.json','o.json'])
-def test_invalid_boolean_capacity_rejected():
-  '''VALID-03: "布尔值不得当作数值。"'''
-  a=base(); a['edges'][0]['capacity']=True; r,b,_,left,exists=run(a)
-  assert r.returncode!=0 and b is None
-  assert left == [] and not exists and 'report' not in left
-  r,b,s,left,exists=run(a,b'keep'); assert r.returncode!=0 and b==s
-  assert left==[] and exists and 'report' not in left
-def test_output_has_exact_public_keys():
-  '''CERT-04: "输出对象必须且只能包含 `max_flow`、`min_cut_capacity`、`source_side`、`shortest_path_cost` 和 `shortest_path` 五个字段。"'''
-  x=json.loads(run(base())[1]); assert set(x)=={'max_flow','min_cut_capacity','source_side','shortest_path_cost','shortest_path'}
 
-def test_invalid_top_level_preserves_absent_destination_and_no_artifacts():
-  '''VALID-03: "输入结构、数值边界、路径与割证书、确定性排序、误差容差以及跨运行发布状态都属于公开契约的一部分。"'''
-  r,b,_,left,exists=run({'nodes':[],'edges':[],'source':'s','sink':'t'})
-  assert r.returncode!=0 and b is None
-  assert left == [] and not exists and 'report' not in left
-  r,b,s,left,exists=run({'nodes':[],'edges':[],'source':'s','sink':'t'},b'keep')
-  assert r.returncode!=0 and b==s
-  assert left==[] and exists and 'report' not in left
+def brute_force_optimum(data):
+    nodes = data["nodes"]
+    index = {node: i for i, node in enumerate(nodes)}
+    edges = data["edges"]
+    choices = [range(int(edge["capacity"]) + 1) for edge in edges]
+    best_flow, best_cost = -math.inf, math.inf
+    for flows in itertools.product(*choices):
+        balance = [0] * len(nodes)
+        for edge, flow in zip(edges, flows):
+            balance[index[edge["u"]]] += flow
+            balance[index[edge["v"]]] -= flow
+        source, sink = index[data["source"]], index[data["sink"]]
+        value = balance[source]
+        if balance[sink] != -value or any(balance[i] for i in range(len(nodes)) if i not in (source, sink)):
+            continue
+        cost = sum(flow * edge["cost"] for edge, flow in zip(edges, flows))
+        if value > best_flow or (value == best_flow and cost < best_cost):
+            best_flow, best_cost = value, cost
+    return best_flow, best_cost
 
-def test_invalid_cost_preserves_existing_sentinel_byte_for_byte():
-  '''VALID-03: "所有数值都必须有限，布尔值不得当作数值。"'''
-  a=base(); a['edges'][0]['cost']=True; sent=b'unchanged\x00'; r,b,s,left,exists=run(a,sent)
-  assert r.returncode!=0 and b==s
-  assert left == [] and exists and 'report' not in left
-  r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None
-  assert left==[] and not exists and 'report' not in left
 
-def test_duplicate_json_key_rejected_atomically():
-  '''VALID-04: "任一 JSON 对象内同名键重复出现时，输入无效。"'''
-  raw='{"nodes":["s","t"],"nodes":["s","t"],"edges":[],"source":"s","sink":"t"}'
-  r,b,_,left,exists=run_raw(raw); assert r.returncode!=0 and b is None
-  assert left==[] and not exists
-  r,b,s,left,exists=run_raw(raw,b'unchanged\x00'); assert r.returncode!=0 and b==s
-  assert left==[] and exists
+def fixture():
+    return {
+        "nodes": ["s", "cheap", "dear", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "cheap", "capacity": 2, "cost": 1},
+            {"u": "cheap", "v": "t", "capacity": 2, "cost": 0},
+            {"u": "s", "v": "dear", "capacity": 2, "cost": 4},
+            {"u": "dear", "v": "t", "capacity": 2, "cost": 0},
+            {"u": "t", "v": "s", "capacity": 2, "cost": 0},
+        ],
+    }
 
-def test_late_invalid_record_does_not_publish_prefix_or_checkpoint():
-  '''VALID-03: "只有在校验和计算全部完成后，才允许发布合法结果。"'''
-  a=base(); a['edges']=a['edges']+[{'u':'s','v':'t','capacity':float('nan'),'cost':0}]; r,b,_,left,exists=run(a)
-  assert r.returncode!=0 and b is None
-  assert left == [] and not exists and 'report' not in left
-  r,b,s,left,exists=run(a,b'keep'); assert r.returncode!=0 and b==s
-  assert left==[] and exists and 'report' not in left
 
-def test_released_rejected_released_state_matrix():
-  '''AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"'''
-  states = ['released', 'rejected', 'released']
-  assert states == ['released', 'rejected', 'released']
-  with tempfile.TemporaryDirectory() as td:
-    p=Path(td); i=p/'i.json'; o=p/'o.json'; good=base(); i.write_text(json.dumps(good),encoding='utf-8')
-    first=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10); first_bytes=o.read_bytes()
-    bad=base(); bad['edges'][0]['capacity']=True; i.write_text(json.dumps(bad),encoding='utf-8')
-    second=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    assert first.returncode==0 and second.returncode!=0 and o.read_bytes()==first_bytes
-    i.write_text(json.dumps(good),encoding='utf-8'); third=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    assert third.returncode==0 and o.read_bytes()==first_bytes
+def test_optimum_and_complete_primal_dual_certificate():
+    '''OPT-01: "`edge_flows` 与输入边一一对应并保持原顺序。" `max_flow` is maximized before `min_cost` is minimized.'''
+    data = fixture()
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 4 and result["min_cost"] == 10
+    assert len(result["edge_flows"]) == len(data["edges"])
+    assert certificate_issues(data, result) == []
 
-def test_rejected_released_rejected_state_matrix():
-  '''AXIS-STATE: "连续执行“发布、拒收、发布”时，必须始终保持上述保证。"'''
-  states = ['rejected', 'released', 'rejected']
-  assert states == ['rejected', 'released', 'rejected']
-  with tempfile.TemporaryDirectory() as td:
-    p=Path(td); i=p/'i.json'; o=p/'o.json'
-    bad=base(); bad['edges'][0]['capacity']=True; i.write_text(json.dumps(bad),encoding='utf-8')
-    first=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    assert first.returncode!=0 and not o.exists()
-    i.write_text(json.dumps(base()),encoding='utf-8')
-    second=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    assert second.returncode==0 and o.exists()
-    released=o.read_bytes()
-    i.write_text(json.dumps(bad),encoding='utf-8')
-    third=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
-    assert third.returncode!=0 and o.read_bytes()==released
+
+def test_exhaustive_small_networks_match_independent_flow_enumeration():
+    '''OPT-02: "`max_flow` 必须是所有可行方案中的最大值；在所有最大流方案中，`min_cost` 必须是最低总成本。"'''
+    rng = random.Random(73021)
+    for case_id in range(18):
+        nodes = ["s", "a", "b", "t"]
+        possible = [(u, v) for i, u in enumerate(nodes) for v in nodes[i + 1 :]]
+        rng.shuffle(possible)
+        selected = possible[: rng.randint(3, 7)]
+        edges = [
+            {"u": u, "v": v, "capacity": rng.randint(0, 2), "cost": rng.randint(-4, 7)}
+            for u, v in selected
+        ]
+        data = {"nodes": nodes, "edges": edges, "source": "s", "sink": "t"}
+        expected_flow, expected_cost = brute_force_optimum(data)
+        process, output, leftovers, exists = run(data)
+        result = json.loads(output)
+        assert process.returncode == 0 and exists and leftovers == [], f"case={case_id}"
+        assert result["max_flow"] == expected_flow, f"case={case_id}"
+        assert abs(result["min_cost"] - expected_cost) <= tolerance(result["min_cost"], expected_cost), f"case={case_id}"
+        assert certificate_issues(data, result) == [], f"case={case_id}"
+
+
+def test_residual_rerouting_finds_a_full_flow():
+    '''OPT-03: "`max_flow` 必须是所有可行方案中的最大值" including rerouting prior edge use.'''
+    data = {
+        "nodes": ["s", "a", "b", "x", "y", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "a", "capacity": 1, "cost": 0},
+            {"u": "s", "v": "b", "capacity": 1, "cost": 0},
+            {"u": "a", "v": "x", "capacity": 1, "cost": 0},
+            {"u": "a", "v": "y", "capacity": 1, "cost": 0},
+            {"u": "b", "v": "x", "capacity": 1, "cost": 0},
+            {"u": "x", "v": "t", "capacity": 1, "cost": 0},
+            {"u": "y", "v": "t", "capacity": 1, "cost": 0},
+        ],
+    }
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 2 and result["min_cost"] == 0
+    assert certificate_issues(data, result) == []
+
+
+def test_parallel_edges_keep_separate_costs_and_input_positions():
+    '''OPT-04: "边按数组位置区分，因此允许平行边" and `edge_flows` preserves that order.'''
+    data = {
+        "nodes": ["s", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "t", "capacity": 1, "cost": 9},
+            {"u": "s", "v": "t", "capacity": 2, "cost": 2},
+            {"u": "s", "v": "t", "capacity": 0, "cost": -100},
+        ],
+    }
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 3 and result["min_cost"] == 13
+    assert result["edge_flows"] == [1, 2, 0]
+    assert certificate_issues(data, result) == []
+
+
+def test_negative_edge_without_negative_cycle_is_optimized():
+    '''OPT-02: "负成本边本身允许" and the least-cost maximum flow is required.'''
+    data = {
+        "nodes": ["s", "a", "b", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "a", "capacity": 1, "cost": -5},
+            {"u": "a", "v": "t", "capacity": 1, "cost": 2},
+            {"u": "s", "v": "b", "capacity": 1, "cost": 1},
+            {"u": "b", "v": "t", "capacity": 1, "cost": 1},
+        ],
+    }
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 2 and result["min_cost"] == -1
+    assert certificate_issues(data, result) == []
+
+
+def test_every_positive_capacity_participates_and_zero_capacity_does_not():
+    '''OPT-04: "不得把严格正容量或正剩余容量按固定 epsilon 当作零。"'''
+    data = {
+        "nodes": ["s", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "t", "capacity": 1e-16, "cost": -2},
+            {"u": "s", "v": "t", "capacity": 0, "cost": -100},
+        ],
+    }
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 1e-16 and result["edge_flows"] == [1e-16, 0]
+    assert result["min_cost"] == -2e-16
+    assert certificate_issues(data, result) == []
+
+
+def test_unreachable_sink_has_zero_flow_and_valid_cut():
+    '''OPT-01: "`source_side` ... 列出从 `source` 出发、可沿正剩余容量到达的全部节点。"'''
+    data = {
+        "nodes": ["s", "a", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [{"u": "s", "v": "a", "capacity": 2, "cost": 3}],
+    }
+    process, output, leftovers, exists = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["max_flow"] == 0 and result["min_cost"] == 0
+    assert result["edge_flows"] == [0] and result["source_side"] == ["s", "a"]
+    assert result["min_cut_capacity"] == 0 and certificate_issues(data, result) == []
+
+
+def test_rejects_negative_cycle_even_when_disconnected_and_preserves_output():
+    '''VALID-01: "检查范围包括所有节点，即使该环与配送源点或交付点断开。"'''
+    data = {
+        "nodes": ["s", "t", "x", "y"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "t", "capacity": 1, "cost": 0},
+            {"u": "x", "v": "y", "capacity": 1, "cost": -2},
+            {"u": "y", "v": "x", "capacity": 1, "cost": 1},
+        ],
+    }
+    process, output, leftovers, exists = run(data)
+    assert process.returncode != 0 and output is None and leftovers == [] and not exists
+    sentinel = b"previous-plan\x00"
+    process, output, leftovers, exists = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+
+
+def test_rejects_reachable_negative_cost_self_loop():
+    '''VALID-01: "自环若容量为正且成本为负，属于应拒收的负成本环。"'''
+    data = {
+        "nodes": ["s", "a", "t"],
+        "source": "s",
+        "sink": "t",
+        "edges": [
+            {"u": "s", "v": "a", "capacity": 1, "cost": 0},
+            {"u": "a", "v": "a", "capacity": 1, "cost": -0.25},
+            {"u": "a", "v": "t", "capacity": 1, "cost": 0},
+        ],
+    }
+    sentinel = b"keep-old-plan"
+    process, output, leftovers, exists = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+
+
+def test_rejects_duplicate_json_keys_without_publication():
+    '''VALID-02: "任意 JSON 对象出现重复键...时，输入无效。"'''
+    raw = '{"nodes":["s","t"],"edges":[],"source":"s","sink":"t","source":"t"}'
+    process, output, leftovers, exists = run({}, raw=raw)
+    assert process.returncode != 0 and output is None and leftovers == [] and not exists
+
+
+def test_late_invalid_edge_preserves_sentinel_and_leaves_no_temporary_file():
+    '''VALID-03: "拒收或发布失败不得创建或改动目标文件，也不得留下临时产物。"'''
+    data = fixture()
+    data["edges"].append({"u": "missing", "v": "t", "capacity": 1, "cost": 0})
+    sentinel = b"old-ledger-version"
+    process, output, leftovers, exists = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+    process, output, leftovers, exists = run(data)
+    assert process.returncode != 0 and output is None and leftovers == [] and not exists
+
+
+def test_atomic_replace_failure_preserves_old_plan():
+    '''VALID-03: "发布失败不得创建或改动目标文件，也不得留下临时产物。"'''
+    import importlib.util
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        input_path, output_path = root / "input.json", root / "output.json"
+        input_path.write_text(json.dumps(fixture()), encoding="utf-8")
+        sentinel = b"prior-plan\x00"
+        output_path.write_bytes(sentinel)
+        spec = importlib.util.spec_from_file_location("candidate_solver", APP)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = module.os.replace
+        module.os.replace = lambda _src, _dst: (_ for _ in ()).throw(OSError("injected replace failure"))
+        old_argv = sys.argv
+        sys.argv = [APP, str(input_path), str(output_path)]
+        try:
+            status = module.main()
+        finally:
+            sys.argv = old_argv
+            module.os.replace = original
+        assert status != 0 and output_path.read_bytes() == sentinel
+        assert sorted(p.name for p in root.iterdir()) == ["input.json", "output.json"]
+
+
+def test_identical_runs_produce_semantically_identical_results():
+    '''VALID-04: "相同输入的成功运行必须产生相同 JSON 结果。"'''
+    data = fixture()
+    first, first_bytes, first_leftovers, first_exists = run(data)
+    second, second_bytes, second_leftovers, second_exists = run(data)
+    assert first.returncode == second.returncode == 0
+    assert first_exists and second_exists and first_leftovers == second_leftovers == []
+    assert json.loads(first_bytes) == json.loads(second_bytes)
+
+
+def test_public_scale_finishes_and_returns_a_checkable_optimum():
+    '''PERF-05: "合法输入可达公开规模时，程序须在 20 秒内完成。"'''
+    layers = [[f"L{level:04d}{label}" for label in "AB"] for level in range(1023)]
+    nodes = ["S"] + [node for layer in layers for node in layer] + ["T"]
+    edges = [{"u": "S", "v": node, "capacity": 1, "cost": 0} for node in layers[0]]
+    for level, (previous, current) in enumerate(zip(layers, layers[1:])):
+        cost = -1 if (level + 1) % 4 == 0 else 0
+        edges.extend(
+            {"u": u, "v": v, "capacity": 1, "cost": cost}
+            for u in previous
+            for v in current
+            for _ in range(4)
+        )
+    edges.extend({"u": node, "v": "T", "capacity": 1, "cost": 0} for node in layers[-1] for _ in range(15))
+    assert len(nodes) == 2048 and len(edges) == 16384
+    data = {"nodes": nodes, "edges": list(reversed(edges)), "source": "S", "sink": "T"}
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        input_path, output_path = root / "input.json", root / "output.json"
+        input_path.write_text(json.dumps(data), encoding="utf-8")
+        started = time.monotonic()
+        process = subprocess.run([sys.executable, APP, str(input_path), str(output_path)], capture_output=True, timeout=20)
+        elapsed = time.monotonic() - started
+        assert process.returncode == 0 and elapsed < 20 and output_path.exists()
+        result = json.loads(output_path.read_bytes())
+        assert result["max_flow"] == 2 and result["min_cost"] == -510
+        assert result["min_cut_capacity"] == 2 and result["source_side"] == ["S"]
+        assert certificate_issues(data, result) == []
