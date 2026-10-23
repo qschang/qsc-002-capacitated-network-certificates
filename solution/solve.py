@@ -6,7 +6,6 @@ import os
 import re
 import sys
 import tempfile
-from functools import lru_cache
 
 IDENTIFIER = re.compile(r"[A-Z0-9-]{1,16}\Z")
 
@@ -118,69 +117,97 @@ def enumerate_paths(start, end, lanes, adjacency, sla_minutes):
 def optimize(lanes, orders, adjacency):
     paths = [enumerate_paths(order[1], order[2], lanes, adjacency, order[5]) for order in orders]
     order_sequence = sorted(range(len(orders)), key=lambda index: orders[index][0])
+    lane_count = len(lanes)
+    loads = [0] * (2 * lane_count)
+    counts = [0, 0, 0]
+    choices = []
+    best = None
 
-    def better(candidate, current):
-        if current is None or candidate[0] != current[0]:
-            return current is None or candidate[0] > current[0]
-        if candidate[1] != current[1]:
-            return candidate[1] < current[1]
-        return candidate[2] < current[2]
+    def descriptor_less(left, right):
+        for left_choice, right_choice in zip(left, right):
+            left_path = () if left_choice is None else tuple(lanes[i][0] for i in left_choice[1])
+            right_path = () if right_choice is None else tuple(lanes[i][0] for i in right_choice[1])
+            if left_path != right_path:
+                return left_path < right_path
+            left_wave = "" if left_choice is None else left_choice[0]
+            right_wave = "" if right_choice is None else right_choice[0]
+            if left_wave != right_wave:
+                return left_wave < right_wave
+        return False
 
-    @lru_cache(maxsize=None)
-    def visit(position, loads):
+    def visit(position, total_cost):
+        nonlocal best
         if position == len(order_sequence):
-            return (0, 0, 0), 0, (), ()
+            candidate_counts = tuple(counts)
+            candidate_choices = tuple(choices)
+            if (
+                best is None
+                or candidate_counts > best[0]
+                or (candidate_counts == best[0] and total_cost < best[1])
+                or (candidate_counts == best[0] and total_cost == best[1]
+                    and descriptor_less(candidate_choices, best[2]))
+            ):
+                best = candidate_counts, total_cost, candidate_choices
+            return
+
+        if best is not None:
+            upper = counts[:]
+            for remaining_index in order_sequence[position:]:
+                upper[orders[remaining_index][3]] += 1
+            upper = tuple(upper)
+            if upper < best[0] or (upper == best[0] and total_cost > best[1]):
+                return
+            if upper == best[0] and total_cost == best[1]:
+                prefix = tuple(choices)
+                incumbent_prefix = best[2][:position]
+                if descriptor_less(incumbent_prefix, prefix):
+                    return
 
         order_index = order_sequence[position]
         order = orders[order_index]
-        pallets, priority = order[4], order[3]
-        suffix_counts, suffix_cost, suffix_descriptor, suffix_paths = visit(position + 1, loads)
-        best = (
-            suffix_counts,
-            suffix_cost,
-            ((),) + suffix_descriptor,
-            (None,) + suffix_paths,
-        )
-
+        priority, pallets, allowed_waves = order[3], order[4], order[6]
+        options = []
         for path in paths[order_index]:
-            for wave_name in order[6]:
-                wave = 0 if wave_name == "early" else 1
-                wave_offset = wave * len(lanes)
-                if any(loads[wave_offset + lane_index] + pallets > lanes[lane_index][3 + wave] for lane_index in path):
-                    continue
-                next_loads = list(loads)
-                added_cost = 0
-                for lane_index in path:
-                    lane = lanes[lane_index]
-                    if loads[lane_index] + loads[len(lanes) + lane_index] == 0:
-                        added_cost += lane[5]
-                    added_cost += pallets * lane[6]
-                    next_loads[wave_offset + lane_index] += pallets
-                tail_counts, tail_cost, tail_descriptor, tail_paths = visit(position + 1, tuple(next_loads))
-                counts = list(tail_counts)
-                counts[priority] += 1
-                descriptor = (wave_name, tuple(lanes[lane_index][0] for lane_index in path))
-                candidate = (
-                    tuple(counts),
-                    tail_cost + added_cost,
-                    (descriptor,) + tail_descriptor,
-                    ((wave_name, path),) + tail_paths,
-                )
-                if better(candidate, best):
-                    best = candidate
-        return best
+            lane_ids = tuple(lanes[lane_index][0] for lane_index in path)
+            for wave_name in allowed_waves:
+                options.append((lane_ids, wave_name, path))
+        options.sort(key=lambda item: (item[0], item[1]))
 
-    counts, total_cost, _, ordered_paths = visit(0, tuple([0] * (2 * len(lanes))))
+        for _, wave_name, path in options:
+            wave = 0 if wave_name == "early" else 1
+            offset = wave * lane_count
+            if any(loads[offset + lane_index] + pallets > lanes[lane_index][3 + wave] for lane_index in path):
+                continue
+            added_cost = 0
+            for lane_index in path:
+                lane = lanes[lane_index]
+                if loads[lane_index] + loads[lane_count + lane_index] == 0:
+                    added_cost += lane[5]
+                added_cost += pallets * lane[6]
+                loads[offset + lane_index] += pallets
+            choices.append((wave_name, path))
+            counts[priority] += 1
+            visit(position + 1, total_cost + added_cost)
+            counts[priority] -= 1
+            choices.pop()
+            for lane_index in path:
+                loads[offset + lane_index] -= pallets
+
+        choices.append(None)
+        visit(position + 1, total_cost)
+        choices.pop()
+
+    visit(0, 0)
     selected = [None] * len(orders)
     for position, order_index in enumerate(order_sequence):
-        selected[order_index] = ordered_paths[position]
-    return counts, total_cost, selected
+        selected[order_index] = best[2][position]
+    return best[0], best[1], selected
 
 
 def compute(data):
     nodes, lanes, orders, adjacency = validate(data)
     counts, total_cost, selected = optimize(lanes, orders, adjacency)
-    loads = [0] * len(lanes)
+    loads = [0] * (2 * len(lanes))
     for order_index, path in enumerate(selected):
         if path is not None:
             wave_name, lane_path = path
