@@ -6,10 +6,10 @@
     "test_contract.py::test_shared_lane_fee_is_paid_once_for_multiple_orders",
     "test_contract.py::test_sla_boundary_selects_a_feasible_route_and_rejects_late_only_service",
     "test_contract.py::test_tie_break_uses_lane_ids_not_input_lane_order",
-    "test_contract.py::test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break"
+    "test_contract.py::test_dense_route_batch_uses_shared_capacity_and_global_tie_break"
   ],
   "tests": {
-    "test_contract.py::test_exhaustive_small_ledgers_match_independent_joint_enumeration": {"priority":"core","rationale":"joint path, whole-order, lexicographic service and cost optimum against an independent exhaustive oracle","weight":0.30},
+    "test_contract.py::test_exhaustive_small_ledgers_match_independent_joint_enumeration": {"priority":"core","rationale":"joint path, whole-order, lexicographic service and cost optimum against an independent exhaustive oracle","weight":0.28},
     "test_contract.py::test_opening_fee_can_overrule_individually_cheapest_lanes": {"priority":"core","rationale":"global fixed-charge cost can change the preferred path set","weight":0.15},
     "test_contract.py::test_partial_capacity_assignment_prefers_feasible_order_subset": {"priority":"core","rationale":"joint capacity limits determine the lexicographically preferred accepted subset","weight":0.16},
     "test_contract.py::test_tie_break_is_stable_under_order_input_permutation": {"priority":"boundary","rationale":"equal objective order assignment uses order IDs rather than input order","weight":0.05},

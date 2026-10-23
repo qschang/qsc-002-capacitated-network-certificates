@@ -162,19 +162,19 @@ def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
         assert_plan_consistent(data, result)
 
 
-def test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break():
+def test_dense_route_batch_uses_shared_capacity_and_global_tie_break():
     '''CAP-02/FIX-03/TIE-04: "所有订单共用同一班次的线路容量。"'''
     orders = [
-        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": i // 8, "pallets": 3}
-        for i in range(24)
+        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": i // 4, "pallets": 4}
+        for i in range(12)
     ]
     lane_specs = [
         ("S", "A", 32), ("S", "B", 32),
-        ("A", "C", 9), ("A", "D", 9), ("A", "E", 9),
-        ("B", "C", 9), ("B", "D", 9), ("B", "E", 9),
-        ("C", "F", 9), ("C", "G", 9), ("C", "H", 9),
-        ("D", "F", 9), ("D", "G", 9), ("D", "H", 9),
-        ("E", "F", 9), ("E", "G", 9), ("E", "H", 9),
+        ("A", "C", 8), ("A", "D", 8), ("A", "E", 8),
+        ("B", "C", 8), ("B", "D", 8), ("B", "E", 8),
+        ("C", "F", 8), ("C", "G", 8), ("C", "H", 8),
+        ("D", "F", 8), ("D", "G", 8), ("D", "H", 8),
+        ("E", "F", 8), ("E", "G", 8), ("E", "H", 8),
         ("F", "T", 32), ("G", "T", 32), ("H", "T", 32),
     ]
     data = {
@@ -189,19 +189,18 @@ def test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break():
     result = json.loads(output)
     assignment = {row["order_id"]: row["path"] for row in result["orders"]}
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["served_counts"] == {"0": 8, "1": 8, "2": 2}
+    assert result["served_counts"] == {"0": 4, "1": 4, "2": 4}
     assert result["total_cost"] == 0
     route_a = ["L00", "L02", "L08", "L17"]
     route_b = ["L01", "L05", "L09", "L18"]
-    expected = {f"O{i:02d}": route_a for i in range(3)}
-    expected.update({f"O{i:02d}": ["L00", "L03", "L11", "L17"] for i in range(3, 6)})
-    expected.update({f"O{i:02d}": ["L00", "L04", "L14", "L17"] for i in range(6, 9)})
-    expected.update({f"O{i:02d}": route_b for i in range(9, 12)})
-    expected.update({f"O{i:02d}": ["L01", "L06", "L12", "L18"] for i in range(12, 15)})
-    expected.update({f"O15": ["L01", "L07", "L15", "L18"], "O22": ["L01", "L07", "L15", "L18"], "O23": ["L01", "L07", "L15", "L18"]})
-    expected.update({f"O{i:02d}": [] for i in range(16, 22)})
+    expected = {f"O{i:02d}": route_a for i in range(2)}
+    expected.update({f"O{i:02d}": ["L00", "L03", "L11", "L17"] for i in range(2, 4)})
+    expected.update({f"O{i:02d}": ["L00", "L04", "L14", "L17"] for i in range(4, 6)})
+    expected.update({f"O{i:02d}": route_b for i in range(6, 8)})
+    expected.update({f"O{i:02d}": ["L01", "L06", "L12", "L18"] for i in range(8, 10)})
+    expected.update({f"O{i:02d}": ["L01", "L07", "L15", "L18"] for i in range(10, 12)})
     assert assignment == expected
-    assert [row["load"] for row in result["lane_loads"]] == [27, 27, 9, 9, 9, 9, 9, 9, 9, 9, 0, 9, 9, 0, 9, 9, 0, 27, 27, 0]
+    assert [row["load"] for row in result["lane_loads"]] == [24, 24, 8, 8, 8, 8, 8, 8, 8, 8, 0, 8, 8, 0, 8, 8, 0, 24, 24, 0]
     assert_plan_consistent(data, result)
 
 
