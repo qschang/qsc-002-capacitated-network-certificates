@@ -229,7 +229,8 @@ def test_partial_capacity_assignment_prefers_feasible_order_subset():
     result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
     assert result["served_counts"] == {"0": 0, "1": 1, "2": 0}
-    assert result["total_cost"] == 7 and result["lane_loads"][0]["load"] == 3
+    assert result["total_cost"] == 5 and result["lane_loads"][0]["load"] == 2
+    assert [row["order_id"] for row in result["orders"] if row["accepted"]] == ["SMALL"]
     assert_plan_consistent(data, result)
 
 
