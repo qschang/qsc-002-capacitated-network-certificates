@@ -1,17 +1,17 @@
-# Capacitated network certificates
+# 有向容量网络证书
 
-Implement `/app/solve.py` so that it reads UTF-8 JSON from the first command-line path and atomically writes UTF-8 JSON to the second path.
+实现 `/app/solve.py`：从第一个命令行路径读取 UTF-8 JSON，并将 UTF-8 JSON 结果以原子方式写入第二个命令行路径。
 
-The input object has exactly `nodes`, `edges`, `source`, and `sink`. `nodes` is a non-empty array of unique non-empty strings. `source` and `sink` are distinct node names. Each edge has exactly `u`, `v`, `capacity`, and `cost`; endpoints are existing nodes, capacities are finite numbers greater than or equal to zero, costs are finite numbers, and parallel edges and self-loops are allowed. A negative-cost cycle reachable from `source` is invalid. All numbers must be finite and booleans are not numbers.
+输入对象必须且只能包含 `nodes`、`edges`、`source` 和 `sink` 四个字段。`nodes` 是非空且不重复的非空字符串数组；`source` 与 `sink` 是其中两个不同的节点。每条边必须且只能包含 `u`、`v`、`capacity` 和 `cost`；端点必须存在于节点数组中，容量必须是大于等于零的有限数，成本必须是有限数；允许平行边和自环。若从 `source` 可达负成本环，则输入无效。所有数值都必须有限，布尔值不得当作数值。
 
-Return an object with exactly `max_flow`, `min_cut_capacity`, `source_side`, `shortest_path_cost`, and `shortest_path`. `max_flow` is the maximum feasible flow from `source` to `sink`, using each edge separately. `min_cut_capacity` is the capacity of the cut induced by `source_side`; the two values must agree within `1e-9` relative error and `1e-12` absolute error. `source_side` contains every node reachable from `source` by positive residual capacity after the reported flow and is sorted in the input node order.
+输出对象必须且只能包含 `max_flow`、`min_cut_capacity`、`source_side`、`shortest_path_cost` 和 `shortest_path` 五个字段。`max_flow` 是把每条边分别计入后的 source 到 sink 的最大可行流；`min_cut_capacity` 是由 `source_side` 划分出的割容量，两者必须满足相对误差 `1e-9`、绝对误差 `1e-12` 的容差要求。`source_side` 必须包含报告流量完成后从 `source` 仍可沿正剩余容量到达的全部节点，并按输入节点顺序排列。
 
-`shortest_path` is a node sequence from `source` to `sink` with no repeated node and `shortest_path_cost` is the sum of the listed original-edge costs. If the sink is unreachable, use `null` for both. When multiple shortest paths have the same cost, choose the lexicographically smallest node sequence. Negative edge costs are valid when the input has no reachable negative-cost cycle. Self-loops must not change either certificate.
+`shortest_path` 必须是从 `source` 到 `sink` 且不重复节点的路径序列，`shortest_path_cost` 必须等于该路径所用原始边成本之和。若 `sink` 不可达，两者都使用 `null`。存在多个同成本最短路径时，选择节点序列按字典序最小者。没有可达负成本环时，负成本边是合法输入；自环不得改变任一证书。
 
-This contract has three independent correctness obligations: (1) resource accounting must preserve the max-flow/min-cut invariant for a directed multigraph, including parallel-edge and zero-capacity/self-loop boundaries; (2) shortest-path certification must handle signed costs, reachable-cycle rejection, unreachable terminals, and deterministic tie-breaking; and (3) the published certificate must be a stable, permutation-aware projection whose repeated valid runs are byte-stable and whose rejected runs never expose a partial result. Satisfying only one obligation is incomplete.
+程序必须同时满足三类独立要求：正确计算有向多重图的最大流与最小割证书，正确处理带符号成本的路径和可达负环拒收，以及保证结果投影稳定、重复成功运行逐字节一致。只完成其中一部分不算完成任务。
 
-The domain axes are deliberately independent: set/interval reasoning for residual reachability and cut capacity; signed numerical precision for negative-cost paths and tolerance comparisons; and cross-run state recovery for atomic publication, checkpoint-free rejection, and repeated released/rejected/released execution. These axes require distinct invariants and cannot be satisfied by a direct schema translation. The required reasoning includes 集合与区间、精度、误差容差、幂等、恢复、回滚 and 重跑 semantics.
+输入结构、数值边界、路径与割证书、确定性排序、误差容差以及跨运行发布状态都属于公开契约的一部分。程序应在这些约束下处理平行边、自环、不可达终点、非法记录和重复执行，并保持可验证的结果。
 
-Invalid input, a reachable negative-cost cycle, a disagreement between the certificates, or any internal failure must exit nonzero and must not create or modify the destination. Valid output is published only after all validation and computation have completed.
+输入非法、存在可达负成本环、两个证书不一致或发生任何内部错误时，程序必须以非零状态退出，且不得创建或修改目标文件。只有在校验和计算全部完成后，才允许发布合法结果。
 
-The observable publication states are rejected (nonzero exit with no destination mutation) and released (complete validated JSON replacement); repeated released, rejected, released runs must preserve these guarantees.
+可观察的发布状态包括：拒收（非零退出且目标文件不发生变化）和发布（完整、经过校验的 JSON 替换）。连续执行“发布、拒收、发布”时，必须始终保持上述保证。
