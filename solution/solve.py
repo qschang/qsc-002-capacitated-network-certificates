@@ -42,7 +42,7 @@ def validate(data):
         raise ValueError("nodes")
     if not isinstance(lanes, list) or not 1 <= len(lanes) <= 20:
         raise ValueError("lane count")
-    if not isinstance(orders, list) or not 1 <= len(orders) <= 8:
+    if not isinstance(orders, list) or not 1 <= len(orders) <= 24:
         raise ValueError("order count")
     node_index = {node: index for index, node in enumerate(nodes)}
     lane_ids = set()
@@ -119,6 +119,7 @@ def optimize(lanes, orders, adjacency):
     opened = [False] * len(lanes)
     selected = [None] * len(orders)
     counts = [0, 0, 0]
+    total_counts = tuple(sum(order[3] == priority for order in orders) for priority in range(3))
     best_key = None
     best_selected = None
     best_counts = None
@@ -130,6 +131,26 @@ def optimize(lanes, orders, adjacency):
             upper = tuple(counts[p] + remaining[position][p] for p in range(3))
             if upper < best_counts or (upper == best_counts and cost > best_cost):
                 return
+            if upper == best_counts == total_counts and cost == best_cost:
+                descriptor_parts = []
+                for index in order_sequence:
+                    if selected[index] is not None:
+                        descriptor_parts.append(
+                            tuple(lanes[lane_index][0] for lane_index in selected[index])
+                        )
+                        continue
+                    feasible = [
+                        path for path in paths[index]
+                        if all(loads[lane_index] + orders[index][4] <= lanes[lane_index][3] for lane_index in path)
+                    ]
+                    if not feasible:
+                        return
+                    descriptor_parts.append(
+                        min(tuple(lanes[lane_index][0] for lane_index in path) for path in feasible)
+                    )
+                descriptor_floor = tuple(descriptor_parts)
+                if descriptor_floor >= best_key[4]:
+                    return
         if position == len(search_sequence):
             descriptor = tuple(
                 () if selected[index] is None else tuple(lanes[lane_index][0] for lane_index in selected[index])

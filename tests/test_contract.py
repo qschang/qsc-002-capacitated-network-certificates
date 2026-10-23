@@ -155,6 +155,35 @@ def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
         assert_plan_consistent(data, result)
 
 
+def test_full_night_shift_batch_uses_shared_capacity_and_global_tie_break():
+    '''CAP-02/FIX-03/TIE-04: "所有订单共用同一班次的线路容量。"'''
+    orders = [
+        {"order_id": f"O{i:02d}", "origin": "S", "destination": "T", "priority": 1, "pallets": 1}
+        for i in range(24)
+    ]
+    data = {
+        "nodes": ["S", "T"],
+        "lanes": [
+            {"lane_id": "A", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "B", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "C", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "D", "from": "S", "to": "T", "capacity": 6, "open_fee": 0, "unit_cost": 0},
+        ],
+        "orders": list(reversed(orders)),
+    }
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assignment = {row["order_id"]: row["path"] for row in result["orders"]}
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["served_counts"] == {"0": 0, "1": 24, "2": 0}
+    assert result["total_cost"] == 0
+    assert assignment == {
+        f"O{i:02d}": [chr(ord("A") + i // 6)] for i in range(24)
+    }
+    assert [row["load"] for row in result["lane_loads"]] == [6, 6, 6, 6]
+    assert_plan_consistent(data, result)
+
+
 def test_shared_lane_fee_is_paid_once_for_multiple_orders():
     '''FIX-03: "其 `open_fee` 只收取一次"'''
     data = {
