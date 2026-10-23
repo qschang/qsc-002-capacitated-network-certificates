@@ -81,6 +81,22 @@ def test_zero_capacity_edges_are_ignored():
   '''FLOW-01: "容量为零的边不参与供给或路线计算。"'''
   a=base(); a['edges'].append({'u':'s','v':'t','capacity':0,'cost':-10}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9 and x['shortest_path_cost']==3
 
+def test_arbitrarily_small_positive_capacity_contributes_to_flow_and_path():
+  '''FLOW-04: "任何大于零的有限容量都参与计算，不设正容量阈值。"'''
+  a={'nodes':['s','t'],'source':'s','sink':'t','edges':[{'u':'s','v':'t','capacity':1e-16,'cost':-2}]}
+  r,b,_,left,exists=run(a); x=json.loads(b)
+  assert r.returncode==0 and x['max_flow']==1e-16 and x['min_cut_capacity']==1e-16
+  assert x['source_side']==['s'] and x['shortest_path_cost']==-2 and x['shortest_path']==['s','t']
+  assert left==[] and exists
+
+def test_tiny_positive_capacity_exposes_reachable_negative_cycle():
+  '''PATH-04: "沿任何正容量边可达" applies even when capacity is below 1e-12.'''
+  a={'nodes':['s','a','b','t'],'source':'s','sink':'t','edges':[
+    {'u':'s','v':'t','capacity':1,'cost':0},{'u':'s','v':'a','capacity':1e-16,'cost':0},
+    {'u':'a','v':'b','capacity':1,'cost':-2},{'u':'b','v':'a','capacity':1,'cost':1}]}
+  r,b,_,left,exists=run(a,b'previous'); assert r.returncode!=0 and b==b'previous'
+  assert left==[] and exists
+
 def test_large_network_meets_published_scale():
   '''PATH-03: "程序至少应在该规模的网络上于 20 秒内完成，并按上述规则生成完整结果。"'''
   layers=[[f'L{level:04d}{label}' for label in 'AB'] for level in range(1023)]

@@ -35,7 +35,7 @@ def flow_cut(n,s,t,edges):
         p=[None]*n; p[s]=(-1,None); q=[s]
         for u in q:
             for a in g[u]:
-                if a[1]>1e-12 and p[a[0]] is None: p[a[0]]=(u,a); q.append(a[0])
+                if a[1]>0.0 and p[a[0]] is None: p[a[0]]=(u,a); q.append(a[0])
         if p[t] is None: break
         z=float('inf'); v=t
         while v!=s: u,a=p[v]; z=min(z,a[1]); v=u
@@ -45,7 +45,7 @@ def flow_cut(n,s,t,edges):
     reach={s}; q=[s]
     for u in q:
         for a in g[u]:
-            if a[1]>1e-12 and a[0] not in reach: reach.add(a[0]); q.append(a[0])
+            if a[1]>0.0 and a[0] not in reach: reach.add(a[0]); q.append(a[0])
     cut=sum(c for u,v,c,_w in edges if u in reach and v not in reach)
     return total,reach,cut
 def shortest(nodes,s,t,edges):
