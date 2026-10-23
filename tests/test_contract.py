@@ -61,6 +61,13 @@ def test_invalid_cost_preserves_existing_sentinel_byte_for_byte():
   assert r.returncode!=0 and b==s
   assert left == [] and exists and 'report' not in left
 
+def test_duplicate_json_key_rejected_atomically():
+  """VALID-04: duplicate JSON object keys are invalid and cannot publish a result."""
+  with tempfile.TemporaryDirectory() as td:
+    p=Path(td); i=p/'i.json'; o=p/'o.json'; i.write_text('{"nodes":["s","t"],"nodes":["s","t"],"edges":[],"source":"s","sink":"t"}',encoding='utf-8')
+    r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=10)
+    assert r.returncode!=0 and not o.exists() and list(p.iterdir())==[i]
+
 def test_late_invalid_record_does_not_publish_prefix_or_checkpoint():
   """VALID-03: a valid prefix followed by a malformed record leaves no partial publication."""
   a=base(); a['edges']=a['edges']+[{'u':'s','v':'t','capacity':float('nan'),'cost':0}]; r,b,_,left,exists=run(a)

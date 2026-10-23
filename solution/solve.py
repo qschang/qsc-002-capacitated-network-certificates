@@ -4,8 +4,14 @@ import json, math, os, sys, tempfile
 
 def finite(x): return isinstance(x,(int,float)) and not isinstance(x,bool) and math.isfinite(x)
 def reject(message): raise ValueError(message)
+def _pairs(pairs):
+    value={}
+    for key,item in pairs:
+        if key in value: reject('duplicate key')
+        value[key]=item
+    return value
 def read_input(path):
-    with open(path,encoding='utf-8') as f: value=json.load(f)
+    with open(path,encoding='utf-8') as f: value=json.load(f, object_pairs_hook=_pairs)
     if not isinstance(value,dict) or set(value)!={'nodes','edges','source','sink'}: reject('top-level schema')
     return value
 def validate(value):

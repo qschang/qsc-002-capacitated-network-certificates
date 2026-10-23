@@ -16,7 +16,8 @@
     "test_contract.py::test_invalid_cost_preserves_existing_sentinel_byte_for_byte": {"priority":"recovery","rationale":"sentinel preservation","weight":0.02},
     "test_contract.py::test_late_invalid_record_does_not_publish_prefix_or_checkpoint": {"priority":"recovery","rationale":"late record","weight":0.02},
     "test_contract.py::test_released_rejected_released_state_matrix": {"priority":"recovery","rationale":"cross-run state recovery","weight":0.02},
-    "test_contract.py::test_rejected_released_rejected_state_matrix": {"priority":"recovery","rationale":"reverse cross-run state recovery","weight":0.02}
+    "test_contract.py::test_rejected_released_rejected_state_matrix": {"priority":"recovery","rationale":"reverse cross-run state recovery","weight":0.02},
+    "test_contract.py::test_duplicate_json_key_rejected_atomically": {"priority":"boundary","rationale":"duplicate-key rejection","weight":0.02}
   },
   "weight_policy": {"basis":"domain_consequence","core_min_share":0.5,"version":1}
 }
