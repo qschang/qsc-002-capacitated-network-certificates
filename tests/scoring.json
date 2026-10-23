@@ -11,12 +11,13 @@
     "test_contract.py::test_node_order_only_changes_sorted_projection": {"priority":"core","rationale":"projection order","weight":0.10},
     "test_contract.py::test_flow_cut_values_match_on_disconnected_components": {"priority":"supporting","rationale":"disconnected invariant","weight":0.06},
     "test_contract.py::test_zero_capacity_edges_are_ignored": {"priority":"boundary","rationale":"zero capacity","weight":0.04},
+    "test_contract.py::test_atomic_replace_failure_preserves_existing_destination": {"priority":"recovery","rationale":"atomic replace failure recovery","weight":0.02},
     "test_contract.py::test_invalid_boolean_capacity_rejected": {"priority":"boundary","rationale":"type rejection","weight":0.04},
     "test_contract.py::test_invalid_top_level_preserves_absent_destination_and_no_artifacts": {"priority":"recovery","rationale":"absent destination","weight":0.02},
     "test_contract.py::test_invalid_cost_preserves_existing_sentinel_byte_for_byte": {"priority":"recovery","rationale":"sentinel preservation","weight":0.02},
-    "test_contract.py::test_late_invalid_record_does_not_publish_prefix_or_checkpoint": {"priority":"recovery","rationale":"late record","weight":0.02},
+    "test_contract.py::test_late_invalid_record_does_not_publish_prefix_or_checkpoint": {"priority":"recovery","rationale":"late record","weight":0.01},
     "test_contract.py::test_released_rejected_released_state_matrix": {"priority":"recovery","rationale":"cross-run state recovery","weight":0.02},
-    "test_contract.py::test_rejected_released_rejected_state_matrix": {"priority":"recovery","rationale":"reverse cross-run state recovery","weight":0.02},
+    "test_contract.py::test_rejected_released_rejected_state_matrix": {"priority":"recovery","rationale":"reverse cross-run state recovery","weight":0.01},
     "test_contract.py::test_duplicate_json_key_rejected_atomically": {"priority":"boundary","rationale":"duplicate-key rejection","weight":0.02}
   },
   "weight_policy": {"basis":"domain_consequence","core_min_share":0.5,"version":1}
