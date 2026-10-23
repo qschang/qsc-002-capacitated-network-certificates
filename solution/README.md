@@ -5,8 +5,10 @@ The reference validates the complete public schema before doing any work and pub
 The independent behavior axes are:
 
 - `FLOW-01`: parallel-edge residual accounting and the max-flow/min-cut invariant (`test_parallel_edges_and_cut_certificate`, `test_self_loop_is_neutral_to_flow_and_path`).
+- `FLOW-02`: residual rerouting when the first augmenting choice blocks a later unit (`test_residual_rerouting_reaches_maximum_flow`). The independent expected flow and cut are both 2.
 - `PATH-02`: negative costs, unreachable sinks, and deterministic tie-breaking (`test_negative_cost_path_and_lexicographic_tie_break`, `test_unreachable_sink_returns_null_certificates`).
 - `PATH-03`: scale on a layered graph with exponentially many equal-cost routes (`test_layered_network_scales_with_exponential_path_count`). The fixture has 64 vertices and 180 arcs, with three choices at each of 20 layers; its expected route follows the lexicographically first viable vertex at each layer.
+- `PATH-02` also distinguishes a source-reachable negative cycle that cannot reach the sink from a negative cycle hidden behind a zero-capacity or disconnected arc (`test_rejects_source_reachable_cycle_disconnected_from_sink`, `test_ignores_negative_cycle_without_positive_capacity_access`).
 - `VALID-03`: complete schema validation and atomic rejection, including late invalid records and reachable negative cycles (`test_rejects_negative_cycle_atomically`, `test_late_invalid_edge_preserves_sentinel`).
 - `CERT-04`: permutation invariance, node-order projection, and numeric conservation (`test_node_order_only_changes_sorted_projection`, `test_flow_cut_values_match_on_disconnected_components`).
 

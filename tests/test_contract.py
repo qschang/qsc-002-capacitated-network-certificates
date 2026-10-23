@@ -14,6 +14,15 @@ def base(): return {'nodes':['s','a','b','t'],'edges':[{'u':'s','v':'a','capacit
 def test_parallel_edges_and_cut_certificate():
   '''AXIS-FLOW: "允许平行边和自环。" and the cut certificate.'''
   r,b,_,left,exists=run(base()); assert r.returncode==0; x=json.loads(b); assert abs(x['max_flow']-9)<1e-12 and abs(x['max_flow']-x['min_cut_capacity'])<1e-12; assert left==[] and exists
+
+def test_residual_rerouting_reaches_maximum_flow():
+  '''FLOW-02: "正确计算有向多重图的最大流与最小割证书"'''
+  a={'nodes':['s','a','b','x','y','t'],'source':'s','sink':'t','edges':[
+    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'s','v':'b','capacity':1,'cost':0},
+    {'u':'a','v':'x','capacity':1,'cost':0},{'u':'a','v':'y','capacity':1,'cost':0},
+    {'u':'b','v':'x','capacity':1,'cost':0},{'u':'x','v':'t','capacity':1,'cost':0},
+    {'u':'y','v':'t','capacity':1,'cost':0}]}
+  x=json.loads(run(a)[1]); assert x['max_flow']==2 and x['min_cut_capacity']==2 and x['source_side']==['s']
 def test_self_loop_is_neutral_to_flow_and_path():
   '''FLOW-01: "允许平行边和自环。"'''
   a=base(); a['edges'].append({'u':'a','v':'a','capacity':100,'cost':0}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
@@ -28,6 +37,22 @@ def test_rejects_negative_cycle_atomically():
   a=base(); a['edges'] += [{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'s','capacity':1,'cost':-2}]; r,b,_,left,exists=run(a)
   assert r.returncode!=0 and b is None
   assert left == [] and not exists and 'report' not in left
+
+def test_rejects_source_reachable_cycle_disconnected_from_sink():
+  '''PATH-02: "若在从 `source` 沿正容量边可达的子图中存在负成本环，则输入无效。"'''
+  a={'nodes':['s','a','b','t'],'source':'s','sink':'t','edges':[
+    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'b','capacity':1,'cost':0},
+    {'u':'b','v':'a','capacity':1,'cost':-1},{'u':'s','v':'t','capacity':1,'cost':2}]}
+  r,b,_,left,exists=run(a,b'old-certificate'); assert r.returncode!=0 and b==b'old-certificate'
+  assert left==[] and exists
+
+def test_ignores_negative_cycle_without_positive_capacity_access():
+  '''PATH-02: "容量为零的边不参与供给或路线计算。"'''
+  a=base(); a['nodes'] += ['x','y']; a['edges'] += [
+    {'u':'s','v':'x','capacity':0,'cost':0},{'u':'x','v':'y','capacity':1,'cost':-2},
+    {'u':'y','v':'x','capacity':1,'cost':1}]
+  x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9
+  assert x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
 def test_late_invalid_edge_preserves_sentinel():
   '''VALID-03: "且不得创建或修改目标文件。"'''
   a=base(); a['edges'].append({'u':'x','v':'t','capacity':1,'cost':0}); sent=b'keep'; r,b,s,left,exists=run(a,sent)
