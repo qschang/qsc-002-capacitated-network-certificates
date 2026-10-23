@@ -1,4 +1,4 @@
-import importlib.util, json, os, subprocess, sys, tempfile
+import importlib.util, json, os, subprocess, sys, tempfile, time
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -81,19 +81,25 @@ def test_zero_capacity_edges_are_ignored():
   '''FLOW-01: "容量为零的边不参与供给或路线计算。"'''
   a=base(); a['edges'].append({'u':'s','v':'t','capacity':0,'cost':-10}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['min_cut_capacity']==9 and x['shortest_path_cost']==3
 
-def test_layered_network_scales_with_exponential_path_count():
-  '''PATH-03: "至少包含 64 个节点和 180 条边的网络；这类输入应在 20 秒内完成。"'''
-  layers=[[f'L{level:02d}{label}' for label in 'ABC'] for level in range(20)]
-  nodes=['S']+[node for layer in layers for node in layer]+['T','X','Y']; edges=[]
-  edges += [{'u':'S','v':node,'capacity':1,'cost':0} for node in layers[0]]
-  for previous,current in zip(layers,layers[1:]):
-    edges += [{'u':u,'v':v,'capacity':1,'cost':0} for u in previous for v in current]
-  edges += [{'u':node,'v':'T','capacity':1,'cost':0} for node in layers[-1]]
-  edges += [{'u':'S','v':node,'capacity':0,'cost':0} for node in layers[0]]
-  assert len(nodes)==64 and len(edges)==180
-  r,b,_,left,exists=run({'nodes':nodes,'edges':edges,'source':'S','sink':'T'}); assert r.returncode==0 and left==[] and exists
-  x=json.loads(b); assert x['max_flow']==3 and x['min_cut_capacity']==3 and x['source_side']==['S']
-  assert x['shortest_path_cost']==0 and x['shortest_path']==['S']+[layer[0] for layer in layers]+['T']
+def test_large_network_meets_published_scale():
+  '''PATH-03: "程序至少应在该规模的网络上于 20 秒内完成，并按上述规则生成完整结果。"'''
+  layers=[[f'L{level:04d}{label}' for label in 'AB'] for level in range(1023)]
+  nodes=['S']+[node for layer in layers for node in layer]+['T']; forward=[]
+  forward += [{'u':'S','v':node,'capacity':1,'cost':-1} for node in layers[0]]
+  for level,(previous,current) in enumerate(zip(layers,layers[1:])):
+    cost=-1 if (level+1)%4==0 else 0
+    forward += [{'u':u,'v':v,'capacity':1,'cost':cost} for u in previous for v in current for _ in range(4)]
+  forward += [{'u':node,'v':'T','capacity':1,'cost':0} for node in layers[-1] for _ in range(15)]
+  edges=list(reversed(forward))
+  assert len(nodes)==2048 and len(edges)==16384
+  with tempfile.TemporaryDirectory() as td:
+    p=Path(td); i=p/'i.json'; o=p/'o.json'
+    i.write_text(json.dumps({'nodes':nodes,'edges':edges,'source':'S','sink':'T'}),encoding='utf-8')
+    started=time.monotonic(); r=subprocess.run([sys.executable,APP,str(i),str(o)],capture_output=True,timeout=20); elapsed=time.monotonic()-started
+    assert r.returncode==0 and elapsed<20 and o.exists()
+    x=json.loads(o.read_bytes())
+    assert x['max_flow']==2 and x['min_cut_capacity']==2 and x['source_side']==['S']
+    assert x['shortest_path_cost']==-256 and x['shortest_path']==['S']+[layer[0] for layer in layers]+['T']
 
 def test_atomic_replace_failure_preserves_existing_destination():
   '''PUB-02: "发生任何内部错误时，程序必须以非零状态退出，且不得创建或修改目标文件。"'''
