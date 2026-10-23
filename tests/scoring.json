@@ -2,10 +2,11 @@
   "schema_version": 1,
   "gate_tests": ["test_contract.py::test_output_has_exact_public_keys"],
   "tests": {
-    "test_contract.py::test_parallel_edges_and_cut_certificate": {"priority":"core","rationale":"flow-cut certificate","weight":0.14},
+    "test_contract.py::test_parallel_edges_and_cut_certificate": {"priority":"core","rationale":"flow-cut certificate","weight":0.12},
     "test_contract.py::test_residual_rerouting_reaches_maximum_flow": {"priority":"core","rationale":"residual rerouting","weight":0.05},
     "test_contract.py::test_self_loop_is_neutral_to_flow_and_path": {"priority":"boundary","rationale":"self-loop boundary","weight":0.07},
-    "test_contract.py::test_negative_cost_path_and_lexicographic_tie_break": {"priority":"core","rationale":"signed path","weight":0.19},
+    "test_contract.py::test_rejects_reachable_negative_cost_self_loop_atomically": {"priority":"core","rationale":"negative self-loop is a negative cycle","weight":0.04},
+    "test_contract.py::test_negative_cost_path_and_lexicographic_tie_break": {"priority":"core","rationale":"signed path","weight":0.17},
     "test_contract.py::test_unreachable_sink_returns_null_certificates": {"priority":"boundary","rationale":"unreachable path","weight":0.06},
     "test_contract.py::test_rejects_negative_cycle_atomically": {"priority":"recovery","rationale":"cycle rejection","weight":0.10},
     "test_contract.py::test_rejects_source_reachable_cycle_disconnected_from_sink": {"priority":"recovery","rationale":"source-reachable cycle scope","weight":0.02},

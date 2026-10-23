@@ -33,6 +33,16 @@ def test_residual_rerouting_reaches_maximum_flow():
 def test_self_loop_is_neutral_to_flow_and_path():
   '''FLOW-01: "允许平行边和自环。"'''
   a=base(); a['edges'].append({'u':'a','v':'a','capacity':100,'cost':0}); x=json.loads(run(a)[1]); assert x['max_flow']==9 and x['shortest_path_cost']==3 and x['shortest_path']==['s','a','t']
+
+def test_rejects_reachable_negative_cost_self_loop_atomically():
+  '''PATH-01: "负成本正容量自环是可达负成本环，因此必须拒收。"'''
+  a={'nodes':['s','a','t'],'source':'s','sink':'t','edges':[
+    {'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'a','capacity':1,'cost':-0.25},
+    {'u':'a','v':'t','capacity':1,'cost':0}]}
+  r,b,_,left,exists=run(a); assert r.returncode!=0 and b is None
+  assert left==[] and not exists
+  r,b,s,left,exists=run(a,b'prior-certificate'); assert r.returncode!=0 and b==s
+  assert left==[] and exists
 def test_negative_cost_path_and_lexicographic_tie_break():
   '''AXIS-PATH: "没有可达负成本环时，负成本边是合法输入；"'''
   a=base(); a['edges']=[{'u':'s','v':'b','capacity':1,'cost':-1},{'u':'b','v':'t','capacity':1,'cost':2},{'u':'s','v':'a','capacity':1,'cost':0},{'u':'a','v':'t','capacity':1,'cost':1}]; x=json.loads(run(a)[1]); assert x['shortest_path_cost']==1 and x['shortest_path']==['s','a','t']
