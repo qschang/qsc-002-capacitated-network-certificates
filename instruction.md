@@ -10,6 +10,8 @@ Return an object with exactly `max_flow`, `min_cut_capacity`, `source_side`, `sh
 
 This contract has three independent correctness obligations: (1) resource accounting must preserve the max-flow/min-cut invariant for a directed multigraph, including parallel-edge and zero-capacity/self-loop boundaries; (2) shortest-path certification must handle signed costs, reachable-cycle rejection, unreachable terminals, and deterministic tie-breaking; and (3) the published certificate must be a stable, permutation-aware projection whose repeated valid runs are byte-stable and whose rejected runs never expose a partial result. Satisfying only one obligation is incomplete.
 
+The domain axes are deliberately independent: set/interval reasoning for residual reachability and cut capacity; signed numerical precision for negative-cost paths and tolerance comparisons; and cross-run state recovery for atomic publication, checkpoint-free rejection, and repeated released/rejected/released execution. These axes require distinct invariants and cannot be satisfied by a direct schema translation. The required reasoning includes 集合与区间、精度、误差容差、幂等、恢复、回滚 and 重跑 semantics.
+
 Invalid input, a reachable negative-cost cycle, a disagreement between the certificates, or any internal failure must exit nonzero and must not create or modify the destination. Valid output is published only after all validation and computation have completed.
 
 The observable publication states are rejected (nonzero exit with no destination mutation) and released (complete validated JSON replacement); repeated released, rejected, released runs must preserve these guarantees.
