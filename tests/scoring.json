@@ -2,7 +2,7 @@
   "schema_version": 1,
   "gate_tests": ["test_contract.py::test_output_has_exact_public_keys"],
   "tests": {
-    "test_contract.py::test_parallel_edges_and_cut_certificate": {"priority":"core","rationale":"flow-cut certificate","weight":0.17},
+    "test_contract.py::test_parallel_edges_and_cut_certificate": {"priority":"core","rationale":"flow-cut certificate","weight":0.15},
     "test_contract.py::test_self_loop_is_neutral_to_flow_and_path": {"priority":"boundary","rationale":"self-loop boundary","weight":0.07},
     "test_contract.py::test_negative_cost_path_and_lexicographic_tie_break": {"priority":"core","rationale":"signed path","weight":0.20},
     "test_contract.py::test_unreachable_sink_returns_null_certificates": {"priority":"boundary","rationale":"unreachable path","weight":0.06},
