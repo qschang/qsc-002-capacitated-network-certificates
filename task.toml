@@ -1,10 +1,10 @@
 schema_version = "1.3"
 
 [task]
-name = "qsc/exact-decimal-transport-settlement"
-description = "Produce an exact-decimal minimum-cost maximum-throughput transport settlement with independently checkable primal, cut, and residual-potential certificates."
+name = "qsc/cold-chain-fixed-charge-dispatch"
+description = "Recover a lexicographically prioritized whole-order cold-chain dispatch plan with shared lane capacities and one-time opening fees."
 authors = [{ name = "QSC" }]
-keywords = ["network-optimization", "maximum-flow", "minimum-cost-flow", "decimal-accounting", "duality", "multigraph"]
+keywords = ["network-optimization", "integer-programming", "priority-dispatch", "fixed-charge", "cold-chain"]
 
 [agent]
 timeout_sec = 3600
@@ -23,5 +23,5 @@ timeout_sec = 300
 [metadata]
 difficulty = "expert"
 category = "H.1 Mathematics"
-tags = ["discrete-graph", "flow-cut", "exact-decimal", "primal-dual-certificate"]
-expert_time_estimate = "12h"
+tags = ["discrete-graph", "unsplittable-orders", "shared-capacity", "fixed-charge"]
+expert_time_estimate = "14h"

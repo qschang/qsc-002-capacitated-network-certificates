@@ -1,344 +1,390 @@
 import itertools
 import json
-import math
 import os
 import random
 import subprocess
 import sys
 import tempfile
-import time
-from decimal import Decimal
 from pathlib import Path
 
 APP = os.environ.get("APP", "/app/solve.py")
-def run(data, sentinel=None, raw=None):
+
+
+def run(data, raw=None, sentinel=None):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         input_path, output_path = root / "input.json", root / "output.json"
         input_path.write_text(raw if raw is not None else json.dumps(data), encoding="utf-8")
         if sentinel is not None:
             output_path.write_bytes(sentinel)
-        result = subprocess.run(
-            [sys.executable, APP, str(input_path), str(output_path)],
-            capture_output=True,
-            timeout=30,
+        process = subprocess.run(
+            [sys.executable, APP, str(input_path), str(output_path)], capture_output=True, timeout=30
         )
-        leftovers = sorted(p.name for p in root.iterdir() if p not in (input_path, output_path))
+        leftovers = sorted(path.name for path in root.iterdir() if path not in (input_path, output_path))
         output = output_path.read_bytes() if output_path.exists() else None
-        return result, output, leftovers, output_path.exists()
+        return process, output, output_path.exists(), leftovers
 
 
-def load_result(payload):
-    result = json.loads(payload)
-    assert all(isinstance(result[field], str) for field in ("max_flow", "min_cost", "min_cut_capacity"))
-    assert all(isinstance(value, str) for field in ("edge_flows", "node_potentials") for value in result[field])
-    for field in ("max_flow", "min_cost", "min_cut_capacity"):
-        result[field] = Decimal(result[field])
-    result["edge_flows"] = [Decimal(value) for value in result["edge_flows"]]
-    result["node_potentials"] = [Decimal(value) for value in result["node_potentials"]]
-    return result
+def all_paths(start, end, lanes):
+    paths = []
+
+    def walk(node, seen, chosen):
+        if node == end:
+            paths.append(tuple(chosen))
+            return
+        for lane in lanes:
+            if lane["from"] == node and lane["to"] not in seen:
+                walk(lane["to"], seen | {lane["to"]}, chosen + [lane["lane_id"]])
+
+    walk(start, {start}, [])
+    return paths
 
 
-def certificate_issues(data, result):
-    nodes = data["nodes"]
-    edges = data["edges"]
-    index = {node: i for i, node in enumerate(nodes)}
-    flows = result["edge_flows"]
-    potentials = result["node_potentials"]
-    if len(flows) != len(edges) or len(potentials) != len(nodes):
-        return ["vector lengths"]
-    balance = [Decimal(0)] * len(nodes)
-    cost_terms = []
-    issues = []
-    for edge, flow in zip(edges, flows):
-        u, v = index[edge["u"]], index[edge["v"]]
-        cap, cost = Decimal(str(edge["capacity"])), Decimal(str(edge["cost"]))
-        if not isinstance(flow, Decimal):
-            issues.append("flow type")
+def exhaustive_plan(data):
+    orders = data["orders"]
+    lanes = {lane["lane_id"]: lane for lane in data["lanes"]}
+    choices = [[None] + all_paths(order["origin"], order["destination"], data["lanes"]) for order in orders]
+    best_key = None
+    best_choice = None
+    for selected in itertools.product(*choices):
+        loads = {lane_id: 0 for lane_id in lanes}
+        counts = [0, 0, 0]
+        cost = 0
+        feasible = True
+        for order, path in zip(orders, selected):
+            if path is None:
+                continue
+            counts[order["priority"]] += 1
+            for lane_id in path:
+                lane = lanes[lane_id]
+                loads[lane_id] += order["pallets"]
+                if loads[lane_id] > lane["capacity"]:
+                    feasible = False
+                cost += order["pallets"] * lane["unit_cost"]
+        if not feasible:
             continue
-        if flow < 0 or flow > cap:
-            issues.append("capacity bound")
-        balance[u] += flow
-        balance[v] -= flow
-        cost_terms.append(flow * cost)
-        forward = cost + potentials[u] - potentials[v]
-        reverse = -cost + potentials[v] - potentials[u]
-        if cap - flow > 0 and forward < 0:
-            issues.append("forward reduced cost")
-        if flow > 0 and reverse < 0:
-            issues.append("reverse reduced cost")
-    source, sink = index[data["source"]], index[data["sink"]]
-    if balance[source] != result["max_flow"]:
-        issues.append("source conservation")
-    if balance[sink] != -result["max_flow"]:
-        issues.append("sink conservation")
-    if any(balance[i] != 0 for i in range(len(nodes)) if i not in (source, sink)):
-        issues.append("intermediate conservation")
-    cost = sum(cost_terms, Decimal(0))
-    if cost != result["min_cost"]:
-        issues.append("objective recomputation")
-    source_side = set(result["source_side"])
-    residual_reachable = {source}
-    queue = [source]
-    for u in queue:
-        for edge, flow in zip(edges, flows):
-            if edge["u"] == nodes[u] and Decimal(str(edge["capacity"])) - flow > 0:
-                v = index[edge["v"]]
-                if v not in residual_reachable:
-                    residual_reachable.add(v)
-                    queue.append(v)
-            if edge["v"] == nodes[u] and flow > 0.0:
-                v = index[edge["u"]]
-                if v not in residual_reachable:
-                    residual_reachable.add(v)
-                    queue.append(v)
-    expected_side = [node for i, node in enumerate(nodes) if i in residual_reachable]
-    if result["source_side"] != expected_side:
-        issues.append("residual reachable side")
-    cut = sum((Decimal(str(e["capacity"])) for e in edges if e["u"] in source_side and e["v"] not in source_side), Decimal(0))
-    if cut != result["min_cut_capacity"]:
-        issues.append("cut recomputation")
-    if result["max_flow"] != cut:
-        issues.append("max-flow/min-cut equality")
-    return issues
+        cost += sum(lanes[lane_id]["open_fee"] for lane_id, load in loads.items() if load)
+        by_id = sorted(range(len(orders)), key=lambda index: orders[index]["order_id"])
+        descriptor = tuple(() if selected[index] is None else selected[index] for index in by_id)
+        key = (-counts[0], -counts[1], -counts[2], cost, descriptor)
+        if best_key is None or key < best_key:
+            best_key, best_choice = key, selected
+    return [-best_key[0], -best_key[1], -best_key[2]], best_key[3], best_choice
 
 
-def brute_force_optimum(data):
-    nodes = data["nodes"]
-    index = {node: i for i, node in enumerate(nodes)}
-    edges = data["edges"]
-    choices = [range(int(edge["capacity"]) + 1) for edge in edges]
-    best_flow, best_cost = -math.inf, math.inf
-    for flows in itertools.product(*choices):
-        balance = [0] * len(nodes)
-        for edge, flow in zip(edges, flows):
-            balance[index[edge["u"]]] += flow
-            balance[index[edge["v"]]] -= flow
-        source, sink = index[data["source"]], index[data["sink"]]
-        value = balance[source]
-        if balance[sink] != -value or any(balance[i] for i in range(len(nodes)) if i not in (source, sink)):
+def assert_plan_consistent(data, result):
+    lane_by_id = {lane["lane_id"]: lane for lane in data["lanes"]}
+    order_by_id = {order["order_id"]: order for order in data["orders"]}
+    loads = {lane_id: 0 for lane_id in lane_by_id}
+    counts = [0, 0, 0]
+    cost = 0
+    assert len(result["orders"]) == len(data["orders"])
+    for row in result["orders"]:
+        order = order_by_id[row["order_id"]]
+        path = row["path"]
+        assert row["accepted"] is (len(path) > 0)
+        if not row["accepted"]:
+            assert path == []
             continue
-        cost = sum(flow * edge["cost"] for edge, flow in zip(edges, flows))
-        if value > best_flow or (value == best_flow and cost < best_cost):
-            best_flow, best_cost = value, cost
-    return best_flow, best_cost
+        counts[order["priority"]] += 1
+        current = order["origin"]
+        visited = {current}
+        for lane_id in path:
+            lane = lane_by_id[lane_id]
+            assert lane["from"] == current
+            current = lane["to"]
+            assert current not in visited
+            visited.add(current)
+            loads[lane_id] += order["pallets"]
+            cost += order["pallets"] * lane["unit_cost"]
+        assert current == order["destination"]
+    cost += sum(lane_by_id[lane_id]["open_fee"] for lane_id, load in loads.items() if load)
+    assert result["served_counts"] == {str(i): counts[i] for i in range(3)}
+    assert result["total_cost"] == cost
+    assert len(result["lane_loads"]) == len(data["lanes"])
+    for row, lane in zip(result["lane_loads"], data["lanes"]):
+        assert row == {"lane_id": lane["lane_id"], "load": loads[lane["lane_id"]], "opened": loads[lane["lane_id"]] > 0}
+        assert 0 <= row["load"] <= lane["capacity"]
 
 
-def fixture():
-    return {
-        "nodes": ["s", "cheap", "dear", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "cheap", "capacity": 2, "cost": 1},
-            {"u": "cheap", "v": "t", "capacity": 2, "cost": 0},
-            {"u": "s", "v": "dear", "capacity": 2, "cost": 4},
-            {"u": "dear", "v": "t", "capacity": 2, "cost": 0},
-            {"u": "t", "v": "s", "capacity": 2, "cost": 0},
+def test_hand_computed_dispatch_respects_priority_and_open_fee_gate():
+    '''PRI-01: 先按 0、1、2 级词典序最大化接收张数，再最小化总费用。'''
+    data = {
+        "nodes": ["S", "A", "T"],
+        "lanes": [
+            {"lane_id": "SA", "from": "S", "to": "A", "capacity": 2, "open_fee": 7, "unit_cost": 1},
+            {"lane_id": "AT", "from": "A", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 1},
+        ],
+        "orders": [
+            {"order_id": "P0", "origin": "S", "destination": "T", "priority": 0, "pallets": 2},
+            {"order_id": "P1", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
         ],
     }
-
-
-def test_optimum_and_complete_primal_dual_certificate():
-    '''OPT-01: "`edge_flows` 与输入边一一对应并保持原顺序。" `max_flow` is maximized before `min_cost` is minimized.'''
-    data = fixture()
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 4 and result["min_cost"] == 10
-    assert len(result["edge_flows"]) == len(data["edges"])
-    assert certificate_issues(data, result) == []
+    assert result["served_counts"] == {"0": 1, "1": 0, "2": 0}
+    assert result["total_cost"] == 11 and [row["accepted"] for row in result["orders"]] == [True, False]
+    assert_plan_consistent(data, result)
 
 
-def test_exhaustive_small_networks_match_independent_flow_enumeration():
-    '''OPT-02: "`max_flow` 必须是所有可行方案中的最大值；在所有最大流方案中，`min_cost` 必须是最低总成本。"'''
-    rng = random.Random(73021)
-    for case_id in range(18):
-        nodes = ["s", "a", "b", "t"]
-        possible = [(u, v) for i, u in enumerate(nodes) for v in nodes[i + 1 :]]
-        rng.shuffle(possible)
-        selected = possible[: rng.randint(3, 7)]
-        edges = [
-            {"u": u, "v": v, "capacity": rng.randint(0, 2), "cost": rng.randint(-4, 7)}
-            for u, v in selected
+def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
+    '''CAP-02: 每张接收订单整托走一条简单路径，所有订单共同占用线路容量。'''
+    rng = random.Random(287014)
+    nodes = ["S", "A", "B", "T"]
+    possible = [("S", "A"), ("S", "B"), ("A", "B"), ("A", "T"), ("B", "T"), ("S", "T")]
+    for case in range(16):
+        selected_edges = possible[:]
+        rng.shuffle(selected_edges)
+        lanes = [
+            {"lane_id": f"L{i:02}", "from": edge[0], "to": edge[1], "capacity": rng.randint(1, 5), "open_fee": rng.randint(0, 8), "unit_cost": rng.randint(0, 5)}
+            for i, edge in enumerate(selected_edges[: rng.randint(3, 6)])
         ]
-        data = {"nodes": nodes, "edges": edges, "source": "s", "sink": "t"}
-        expected_flow, expected_cost = brute_force_optimum(data)
-        process, output, leftovers, exists = run(data)
-        result = load_result(output)
-        assert process.returncode == 0 and exists and leftovers == [], f"case={case_id}"
-        assert result["max_flow"] == expected_flow, f"case={case_id}"
-        assert result["min_cost"] == expected_cost, f"case={case_id}"
-        assert certificate_issues(data, result) == [], f"case={case_id}"
+        orders = [
+            {"order_id": f"O{i}", "origin": "S", "destination": "T", "priority": rng.randrange(3), "pallets": rng.randint(1, 3)}
+            for i in range(3)
+        ]
+        data = {"nodes": nodes, "lanes": lanes, "orders": orders}
+        expected_counts, expected_cost, expected_paths = exhaustive_plan(data)
+        process, output, exists, leftovers = run(data)
+        result = json.loads(output)
+        assert process.returncode == 0 and exists and leftovers == [], f"case={case}"
+        assert [result["served_counts"][str(i)] for i in range(3)] == expected_counts, f"case={case}"
+        assert result["total_cost"] == expected_cost, f"case={case}"
+        assert [None if not row["accepted"] else tuple(row["path"]) for row in result["orders"]] == list(expected_paths), f"case={case}"
+        assert_plan_consistent(data, result)
 
 
-def test_residual_rerouting_finds_a_full_flow():
-    '''OPT-03: "`max_flow` 必须是所有可行方案中的最大值" including rerouting prior edge use.'''
+def test_shared_lane_fee_is_paid_once_for_multiple_orders():
+    '''FIX-03: 一条被多张订单共用的线路，其开线费只收取一次。'''
     data = {
-        "nodes": ["s", "a", "b", "x", "y", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "a", "capacity": 1, "cost": 0},
-            {"u": "s", "v": "b", "capacity": 1, "cost": 0},
-            {"u": "a", "v": "x", "capacity": 1, "cost": 0},
-            {"u": "a", "v": "y", "capacity": 1, "cost": 0},
-            {"u": "b", "v": "x", "capacity": 1, "cost": 0},
-            {"u": "x", "v": "t", "capacity": 1, "cost": 0},
-            {"u": "y", "v": "t", "capacity": 1, "cost": 0},
+        "nodes": ["S", "A", "T"],
+        "lanes": [
+            {"lane_id": "SHARE", "from": "S", "to": "A", "capacity": 2, "open_fee": 9, "unit_cost": 0},
+            {"lane_id": "END", "from": "A", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 0},
+        ],
+        "orders": [
+            {"order_id": "A", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
+            {"order_id": "B", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
         ],
     }
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 2 and result["min_cost"] == 0
-    assert certificate_issues(data, result) == []
+    assert result["served_counts"] == {"0": 0, "1": 2, "2": 0} and result["total_cost"] == 9
+    assert_plan_consistent(data, result)
 
 
-def test_parallel_edges_keep_separate_costs_and_input_positions():
-    '''OPT-04: "边按数组位置区分，因此允许平行边" and `edge_flows` preserves that order.'''
+def test_opening_fee_can_overrule_individually_cheapest_lanes():
+    '''FIX-03: 全局费用包含每条实际启用线路的一次开线费。'''
     data = {
-        "nodes": ["s", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "t", "capacity": 1, "cost": 9},
-            {"u": "s", "v": "t", "capacity": 2, "cost": 2},
-            {"u": "s", "v": "t", "capacity": 0, "cost": -100},
+        "nodes": ["S", "A", "T"],
+        "lanes": [
+            {"lane_id": "DIRECT", "from": "S", "to": "T", "capacity": 2, "open_fee": 12, "unit_cost": 0},
+            {"lane_id": "SA", "from": "S", "to": "A", "capacity": 2, "open_fee": 3, "unit_cost": 0},
+            {"lane_id": "AT", "from": "A", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 0},
+        ],
+        "orders": [
+            {"order_id": "A", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
+            {"order_id": "B", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
         ],
     }
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 3 and result["min_cost"] == 13
-    assert result["edge_flows"] == [1, 2, 0]
-    assert certificate_issues(data, result) == []
+    assert result["total_cost"] == 3 and [row["path"] for row in result["orders"]] == [["SA", "AT"], ["SA", "AT"]]
+    assert_plan_consistent(data, result)
 
 
-def test_negative_edge_without_negative_cycle_is_optimized():
-    '''OPT-02: "负成本边本身允许" and the least-cost maximum flow is required.'''
+def test_whole_order_cannot_be_split_across_individually_insufficient_paths():
+    '''CAP-02: 每张订单不得拆分，必须有一条路径可承载该订单全部托盘。'''
     data = {
-        "nodes": ["s", "a", "b", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "a", "capacity": 1, "cost": -5},
-            {"u": "a", "v": "t", "capacity": 1, "cost": 2},
-            {"u": "s", "v": "b", "capacity": 1, "cost": 1},
-            {"u": "b", "v": "t", "capacity": 1, "cost": 1},
+        "nodes": ["S", "A", "B", "T"],
+        "lanes": [
+            {"lane_id": "SA", "from": "S", "to": "A", "capacity": 2, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "AT", "from": "A", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "SB", "from": "S", "to": "B", "capacity": 2, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "BT", "from": "B", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 0},
         ],
+        "orders": [{"order_id": "WHOLE", "origin": "S", "destination": "T", "priority": 0, "pallets": 3}],
     }
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 2 and result["min_cost"] == -1
-    assert certificate_issues(data, result) == []
+    assert result["served_counts"] == {"0": 0, "1": 0, "2": 0} and result["orders"][0] == {"order_id": "WHOLE", "accepted": False, "path": []}
+    assert_plan_consistent(data, result)
 
 
-def test_every_positive_capacity_participates_and_zero_capacity_does_not():
-    '''OPT-04: 正的最小结算单位必须参与运量；零容量线路不参与。'''
+def test_partial_capacity_assignment_prefers_feasible_order_subset():
+    '''CAP-02: 线路占用不得超过共用容量，并以订单优先级选择可行子集。'''
     data = {
-        "nodes": ["s", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "t", "capacity": 0.000001, "cost": -2},
-            {"u": "s", "v": "t", "capacity": 0, "cost": -100},
+        "nodes": ["S", "T"],
+        "lanes": [{"lane_id": "ONLY", "from": "S", "to": "T", "capacity": 3, "open_fee": 1, "unit_cost": 2}],
+        "orders": [
+            {"order_id": "BIG", "origin": "S", "destination": "T", "priority": 1, "pallets": 3},
+            {"order_id": "SMALL", "origin": "S", "destination": "T", "priority": 1, "pallets": 2},
         ],
     }
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == Decimal("0.000001") and result["edge_flows"] == [Decimal("0.000001"), 0]
-    assert result["min_cost"] == Decimal("-0.000002000000")
-    assert certificate_issues(data, result) == []
+    assert result["served_counts"] == {"0": 0, "1": 1, "2": 0}
+    assert result["total_cost"] == 7 and result["lane_loads"][0]["load"] == 3
+    assert_plan_consistent(data, result)
 
 
-def test_unreachable_sink_has_zero_flow_and_valid_cut():
-    '''OPT-01: "`source_side` ... 列出从 `source` 出发、可沿正剩余容量到达的全部节点。"'''
+def test_tie_break_uses_lane_ids_not_input_lane_order():
+    '''TIE-04: 相同服务数和总费用按线路 ID 序列 ASCII 字典序裁决。'''
     data = {
-        "nodes": ["s", "a", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [{"u": "s", "v": "a", "capacity": 2, "cost": 3}],
+        "nodes": ["S", "T"],
+        "lanes": [
+            {"lane_id": "Z", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
+            {"lane_id": "A", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
+        ],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 2, "pallets": 1}],
     }
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
     assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == 0 and result["min_cost"] == 0
-    assert result["edge_flows"] == [0] and result["source_side"] == ["s", "a"]
-    assert result["min_cut_capacity"] == 0 and certificate_issues(data, result) == []
+    assert result["orders"][0]["path"] == ["A"]
+    assert [row["opened"] for row in result["lane_loads"]] == [False, True]
 
 
-def test_rejects_negative_cycle_even_when_disconnected_and_preserves_output():
-    '''VALID-01: "检查范围包括所有节点，即使该环与配送源点或交付点断开。"'''
+def test_tie_break_is_stable_under_order_input_permutation():
+    '''TIE-04: 费用并列时订单按 ID 而非输入顺序决定路径组合。'''
+    lanes = [
+        {"lane_id": "A", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
+        {"lane_id": "B", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
+    ]
+    orders = [
+        {"order_id": "X", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
+        {"order_id": "Y", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
+    ]
+    first, out_first, exists_first, _ = run({"nodes": ["S", "T"], "lanes": lanes, "orders": orders})
+    second, out_second, exists_second, _ = run({"nodes": ["S", "T"], "lanes": lanes, "orders": list(reversed(orders))})
+    by_id_first = {row["order_id"]: row["path"] for row in json.loads(out_first)["orders"]}
+    by_id_second = {row["order_id"]: row["path"] for row in json.loads(out_second)["orders"]}
+    assert first.returncode == second.returncode == 0 and exists_first and exists_second
+    assert by_id_first == by_id_second == {"X": ["A"], "Y": ["B"]}
+
+
+def test_unreachable_order_is_rejected_without_changing_other_service():
+    '''PRI-01: 无可行路径的订单不阻止其他订单正常排程。'''
     data = {
-        "nodes": ["s", "t", "x", "y"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "t", "capacity": 1, "cost": 0},
-            {"u": "x", "v": "y", "capacity": 1, "cost": -2},
-            {"u": "y", "v": "x", "capacity": 1, "cost": 1},
+        "nodes": ["S", "T", "X"],
+        "lanes": [{"lane_id": "ST", "from": "S", "to": "T", "capacity": 1, "open_fee": 4, "unit_cost": 2}],
+        "orders": [
+            {"order_id": "OK", "origin": "S", "destination": "T", "priority": 2, "pallets": 1},
+            {"order_id": "MISS", "origin": "X", "destination": "T", "priority": 0, "pallets": 1},
         ],
     }
-    process, output, leftovers, exists = run(data)
-    assert process.returncode != 0 and output is None and leftovers == [] and not exists
-    sentinel = b"previous-plan\x00"
-    process, output, leftovers, exists = run(data, sentinel=sentinel)
-    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert result["served_counts"] == {"0": 0, "1": 0, "2": 1}
+    assert [row["accepted"] for row in result["orders"]] == [True, False]
 
 
-def test_rejects_reachable_negative_cost_self_loop():
-    '''VALID-01: "自环若容量为正且成本为负，属于应拒收的负成本环。"'''
+def test_output_shape_and_input_order_are_preserved():
+    '''VALID-05: 输出字段集合固定，订单与线路行分别保持输入顺序。'''
     data = {
-        "nodes": ["s", "a", "t"],
-        "source": "s",
-        "sink": "t",
-        "edges": [
-            {"u": "s", "v": "a", "capacity": 1, "cost": 0},
-            {"u": "a", "v": "a", "capacity": 1, "cost": -0.25},
-            {"u": "a", "v": "t", "capacity": 1, "cost": 0},
+        "nodes": ["S", "T"],
+        "lanes": [
+            {"lane_id": "Z", "from": "S", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 1},
+            {"lane_id": "A", "from": "S", "to": "T", "capacity": 2, "open_fee": 0, "unit_cost": 2},
+        ],
+        "orders": [
+            {"order_id": "Z-ORDER", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
+            {"order_id": "A-ORDER", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
         ],
     }
-    sentinel = b"keep-old-plan"
-    process, output, leftovers, exists = run(data, sentinel=sentinel)
-    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+    process, output, exists, leftovers = run(data)
+    result = json.loads(output)
+    assert process.returncode == 0 and exists and leftovers == []
+    assert set(result) == {"served_counts", "total_cost", "orders", "lane_loads"}
+    assert [row["order_id"] for row in result["orders"]] == ["Z-ORDER", "A-ORDER"]
+    assert [row["lane_id"] for row in result["lane_loads"]] == ["Z", "A"]
 
 
-def test_rejects_duplicate_json_keys_without_publication():
-    '''VALID-02: "任意 JSON 对象出现重复键...时，输入无效。"'''
-    raw = '{"nodes":["s","t"],"edges":[],"source":"s","sink":"t","source":"t"}'
-    process, output, leftovers, exists = run({}, raw=raw)
-    assert process.returncode != 0 and output is None and leftovers == [] and not exists
+def test_identical_input_produces_identical_json_bytes():
+    '''VALID-05: 相同输入必须产生相同 JSON 字节。'''
+    data = {
+        "nodes": ["S", "T"],
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 1, "open_fee": 3, "unit_cost": 4}],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1}],
+    }
+    first, bytes_first, exists_first, left_first = run(data)
+    second, bytes_second, exists_second, left_second = run(data)
+    assert first.returncode == second.returncode == 0
+    assert exists_first and exists_second and left_first == left_second == []
+    assert bytes_first == bytes_second
 
 
-def test_late_invalid_edge_preserves_sentinel_and_leaves_no_temporary_file():
-    '''VALID-03: "拒收或发布失败不得创建或改动目标文件，也不得留下临时产物。"'''
-    data = fixture()
-    data["edges"].append({"u": "missing", "v": "t", "capacity": 1, "cost": 0})
-    sentinel = b"old-ledger-version"
-    process, output, leftovers, exists = run(data, sentinel=sentinel)
-    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
-    process, output, leftovers, exists = run(data)
-    assert process.returncode != 0 and output is None and leftovers == [] and not exists
+def test_rejects_duplicate_json_key_without_creating_output():
+    '''VALID-05: 任意 JSON 对象出现重复键时，输入无效。'''
+    raw = '{"nodes":["S","T"],"nodes":["S","X"],"lanes":[],"orders":[]}'
+    process, output, exists, leftovers = run({}, raw=raw)
+    assert process.returncode != 0 and output is None and not exists and leftovers == []
 
 
-def test_atomic_replace_failure_preserves_old_plan():
-    '''VALID-03: "发布失败不得创建或改动目标文件，也不得留下临时产物。"'''
+def test_rejects_boolean_capacity_and_preserves_sentinel():
+    '''VALID-05: 布尔值不是整数容量，拒收时旧文件字节不变。'''
+    data = {
+        "nodes": ["S", "T"],
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": True, "open_fee": 0, "unit_cost": 0}],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1}],
+    }
+    sentinel = b"prior-dispatch\x00"
+    process, output, exists, leftovers = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and exists and leftovers == []
+
+
+def test_rejects_fractional_integer_field():
+    '''VALID-05: 公开字段声明为整数，浮点形式的整数也不是合法整数值。'''
+    raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","capacity":1.0,"open_fee":0,"unit_cost":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1}]}'
+    process, output, exists, leftovers = run({}, raw=raw)
+    assert process.returncode != 0 and output is None and not exists and leftovers == []
+
+
+def test_rejects_duplicate_identifier_and_late_invalid_order_atomically():
+    '''VALID-05: 重复订单标识或末尾非法订单均拒收且不得留下临时文件。'''
+    data = {
+        "nodes": ["S", "T"],
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 8, "open_fee": 0, "unit_cost": 0}],
+        "orders": [
+            {"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1},
+            {"order_id": "O", "origin": "S", "destination": "T", "priority": 1, "pallets": 1},
+        ],
+    }
+    sentinel = b"old-version"
+    process, output, exists, leftovers = run(data, sentinel=sentinel)
+    assert process.returncode != 0 and output == sentinel and exists and leftovers == []
+    data["orders"][1]["order_id"] = "LATE"
+    data["orders"][1]["priority"] = 8
+    process, output, exists, leftovers = run(data)
+    assert process.returncode != 0 and output is None and not exists and leftovers == []
+
+
+def test_atomic_replace_failure_preserves_old_report():
+    '''VALID-05: 发布替换失败必须保留原报告字节并清理临时文件。'''
     import importlib.util
 
+    data = {
+        "nodes": ["S", "T"],
+        "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0}],
+        "orders": [{"order_id": "O", "origin": "S", "destination": "T", "priority": 0, "pallets": 1}],
+    }
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         input_path, output_path = root / "input.json", root / "output.json"
-        input_path.write_text(json.dumps(fixture()), encoding="utf-8")
-        sentinel = b"prior-plan\x00"
+        input_path.write_text(json.dumps(data), encoding="utf-8")
+        sentinel = b"previous-report"
         output_path.write_bytes(sentinel)
         spec = importlib.util.spec_from_file_location("candidate_solver", APP)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         original = module.os.replace
-        module.os.replace = lambda _src, _dst: (_ for _ in ()).throw(OSError("injected replace failure"))
+        module.os.replace = lambda _src, _dst: (_ for _ in ()).throw(OSError("injected"))
         old_argv = sys.argv
         sys.argv = [APP, str(input_path), str(output_path)]
         try:
@@ -347,66 +393,4 @@ def test_atomic_replace_failure_preserves_old_plan():
             sys.argv = old_argv
             module.os.replace = original
         assert status != 0 and output_path.read_bytes() == sentinel
-        assert sorted(p.name for p in root.iterdir()) == ["input.json", "output.json"]
-
-
-def test_identical_runs_produce_semantically_identical_results():
-    '''VALID-04: "相同输入的成功运行必须产生相同 JSON 结果。"'''
-    data = fixture()
-    first, first_bytes, first_leftovers, first_exists = run(data)
-    second, second_bytes, second_leftovers, second_exists = run(data)
-    assert first.returncode == second.returncode == 0
-    assert first_exists and second_exists and first_leftovers == second_leftovers == []
-    assert first_bytes == second_bytes
-
-
-def test_public_scale_finishes_and_returns_a_checkable_optimum():
-    '''PERF-05: "合法输入可达公开规模时，程序须在 20 秒内完成。"'''
-    layers = [[f"L{level:04d}{label}" for label in "AB"] for level in range(1023)]
-    nodes = ["S"] + [node for layer in layers for node in layer] + ["T"]
-    edges = [{"u": "S", "v": node, "capacity": 1, "cost": 0} for node in layers[0]]
-    for level, (previous, current) in enumerate(zip(layers, layers[1:])):
-        cost = -1 if (level + 1) % 4 == 0 else 0
-        edges.extend(
-            {"u": u, "v": v, "capacity": 1, "cost": cost}
-            for u in previous
-            for v in current
-            for _ in range(4)
-        )
-    edges.extend({"u": node, "v": "T", "capacity": 1, "cost": 0} for node in layers[-1] for _ in range(15))
-    assert len(nodes) == 2048 and len(edges) == 16384
-    data = {"nodes": nodes, "edges": list(reversed(edges)), "source": "S", "sink": "T"}
-    with tempfile.TemporaryDirectory() as temp:
-        root = Path(temp)
-        input_path, output_path = root / "input.json", root / "output.json"
-        input_path.write_text(json.dumps(data), encoding="utf-8")
-        started = time.monotonic()
-        process = subprocess.run([sys.executable, APP, str(input_path), str(output_path)], capture_output=True, timeout=20)
-        elapsed = time.monotonic() - started
-        assert process.returncode == 0 and elapsed < 20 and output_path.exists()
-        result = load_result(output_path.read_bytes())
-        assert result["max_flow"] == 2 and result["min_cost"] == -510
-        assert result["min_cut_capacity"] == 2 and result["source_side"] == ["S"]
-        assert certificate_issues(data, result) == []
-
-
-def test_exact_ledger_keeps_a_minimum_unit_after_large_capacity_aggregation():
-    '''NUM-06: 运量按十进制定值解释，汇总不得吞掉最小结算单位。'''
-    edges = [{"u": "s", "v": "t", "capacity": 1_000_000_000, "cost": 0} for _ in range(10)]
-    edges.append({"u": "s", "v": "t", "capacity": 0.000001, "cost": 0})
-    data = {"nodes": ["s", "t"], "edges": edges, "source": "s", "sink": "t"}
-    process, output, leftovers, exists = run(data)
-    result = load_result(output)
-    expected = Decimal("10000000000.000001")
-    assert process.returncode == 0 and exists and leftovers == []
-    assert result["max_flow"] == expected and result["min_cut_capacity"] == expected
-    assert result["edge_flows"][-1] == Decimal("0.000001")
-    assert certificate_issues(data, result) == []
-
-
-def test_rejects_more_than_six_decimal_places_without_publication():
-    '''NUM-06: 超出公开定点精度的运量或单价必须拒收。'''
-    data = {"nodes": ["s", "t"], "edges": [{"u": "s", "v": "t", "capacity": 0.0000001, "cost": 0}], "source": "s", "sink": "t"}
-    sentinel = b"prior-exact-ledger"
-    process, output, leftovers, exists = run(data, sentinel=sentinel)
-    assert process.returncode != 0 and output == sentinel and leftovers == [] and exists
+        assert sorted(path.name for path in root.iterdir()) == ["input.json", "output.json"]
