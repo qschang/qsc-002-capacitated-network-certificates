@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+from functools import lru_cache
 
 IDENTIFIER = re.compile(r"[A-Z0-9-]{1,16}\Z")
 
@@ -114,89 +115,60 @@ def enumerate_paths(start, end, lanes, adjacency, sla_minutes):
 def optimize(lanes, orders, adjacency):
     paths = [enumerate_paths(order[1], order[2], lanes, adjacency, order[5]) for order in orders]
     order_sequence = sorted(range(len(orders)), key=lambda index: orders[index][0])
-    search_sequence = sorted(range(len(orders)), key=lambda index: (orders[index][3], orders[index][0]))
-    remaining = [[0, 0, 0] for _ in range(len(search_sequence) + 1)]
-    for position in range(len(search_sequence) - 1, -1, -1):
-        remaining[position] = remaining[position + 1].copy()
-        remaining[position][orders[search_sequence[position]][3]] += 1
 
-    loads = [0] * len(lanes)
-    opened = [False] * len(lanes)
-    selected = [None] * len(orders)
-    counts = [0, 0, 0]
-    total_counts = tuple(sum(order[3] == priority for order in orders) for priority in range(3))
-    best_key = None
-    best_selected = None
-    best_counts = None
-    best_cost = None
+    def better(candidate, current):
+        if current is None or candidate[0] != current[0]:
+            return current is None or candidate[0] > current[0]
+        if candidate[1] != current[1]:
+            return candidate[1] < current[1]
+        return candidate[2] < current[2]
 
-    def visit(position, cost):
-        nonlocal best_key, best_selected, best_counts, best_cost
-        if best_key is not None:
-            upper = tuple(counts[p] + remaining[position][p] for p in range(3))
-            if upper < best_counts or (upper == best_counts and cost > best_cost):
-                return
-            if upper == best_counts == total_counts and cost == best_cost:
-                descriptor_parts = []
-                for index in order_sequence:
-                    if selected[index] is not None:
-                        descriptor_parts.append(
-                            tuple(lanes[lane_index][0] for lane_index in selected[index])
-                        )
-                        continue
-                    feasible = [
-                        path for path in paths[index]
-                        if all(loads[lane_index] + orders[index][4] <= lanes[lane_index][3] for lane_index in path)
-                    ]
-                    if not feasible:
-                        return
-                    descriptor_parts.append(
-                        min(tuple(lanes[lane_index][0] for lane_index in path) for path in feasible)
-                    )
-                descriptor_floor = tuple(descriptor_parts)
-                if descriptor_floor >= best_key[4]:
-                    return
-        if position == len(search_sequence):
-            descriptor = tuple(
-                () if selected[index] is None else tuple(lanes[lane_index][0] for lane_index in selected[index])
-                for index in order_sequence
-            )
-            key = (-counts[0], -counts[1], -counts[2], cost, descriptor)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_selected = selected.copy()
-                best_counts = tuple(counts)
-                best_cost = cost
-            return
+    @lru_cache(maxsize=None)
+    def visit(position, loads):
+        if position == len(order_sequence):
+            return (0, 0, 0), 0, (), ()
 
-        order_index = search_sequence[position]
+        order_index = order_sequence[position]
         order = orders[order_index]
-        pallets = order[4]
-        priority = order[3]
+        pallets, priority = order[4], order[3]
+        suffix_counts, suffix_cost, suffix_descriptor, suffix_paths = visit(position + 1, loads)
+        best = (
+            suffix_counts,
+            suffix_cost,
+            ((),) + suffix_descriptor,
+            (None,) + suffix_paths,
+        )
+
         for path in paths[order_index]:
             if any(loads[lane_index] + pallets > lanes[lane_index][3] for lane_index in path):
                 continue
-            added_cost = sum(
-                (0 if opened[lane_index] else lanes[lane_index][4]) + pallets * lanes[lane_index][5]
-                for lane_index in path
-            )
+            next_loads = list(loads)
+            added_cost = 0
             for lane_index in path:
-                loads[lane_index] += pallets
-                opened[lane_index] = True
-            counts[priority] += 1
-            selected[order_index] = path
-            visit(position + 1, cost + added_cost)
-            selected[order_index] = None
-            counts[priority] -= 1
-            for lane_index in path:
-                loads[lane_index] -= pallets
+                lane = lanes[lane_index]
                 if loads[lane_index] == 0:
-                    opened[lane_index] = False
-        selected[order_index] = None
-        visit(position + 1, cost)
+                    added_cost += lane[4]
+                added_cost += pallets * lane[5]
+                next_loads[lane_index] += pallets
+            tail_counts, tail_cost, tail_descriptor, tail_paths = visit(position + 1, tuple(next_loads))
+            counts = list(tail_counts)
+            counts[priority] += 1
+            descriptor = tuple(lanes[lane_index][0] for lane_index in path)
+            candidate = (
+                tuple(counts),
+                tail_cost + added_cost,
+                (descriptor,) + tail_descriptor,
+                (path,) + tail_paths,
+            )
+            if better(candidate, best):
+                best = candidate
+        return best
 
-    visit(0, 0)
-    return best_counts, best_cost, best_selected
+    counts, total_cost, _, ordered_paths = visit(0, tuple([0] * len(lanes)))
+    selected = [None] * len(orders)
+    for position, order_index in enumerate(order_sequence):
+        selected[order_index] = ordered_paths[position]
+    return counts, total_cost, selected
 
 
 def compute(data):
