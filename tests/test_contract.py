@@ -108,7 +108,7 @@ def assert_plan_consistent(data, result):
 
 
 def test_hand_computed_dispatch_respects_priority_and_open_fee_gate():
-    '''PRI-01: 先按 0、1、2 级词典序最大化接收张数，再最小化总费用。'''
+    '''PRI-01: "计划须先按优先级 0、1、2 的顺序，词典序最大化各级接收订单张数；"'''
     data = {
         "nodes": ["S", "A", "T"],
         "lanes": [
@@ -129,7 +129,7 @@ def test_hand_computed_dispatch_respects_priority_and_open_fee_gate():
 
 
 def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
-    '''CAP-02: 每张接收订单整托走一条简单路径，所有订单共同占用线路容量。'''
+    '''CAP-02: "所有订单共用同一班次的线路容量。"'''
     rng = random.Random(287014)
     nodes = ["S", "A", "B", "T"]
     possible = [("S", "A"), ("S", "B"), ("A", "B"), ("A", "T"), ("B", "T"), ("S", "T")]
@@ -156,7 +156,7 @@ def test_exhaustive_small_ledgers_match_independent_joint_enumeration():
 
 
 def test_shared_lane_fee_is_paid_once_for_multiple_orders():
-    '''FIX-03: 一条被多张订单共用的线路，其开线费只收取一次。'''
+    '''FIX-03: "其 `open_fee` 只收取一次"'''
     data = {
         "nodes": ["S", "A", "T"],
         "lanes": [
@@ -176,7 +176,7 @@ def test_shared_lane_fee_is_paid_once_for_multiple_orders():
 
 
 def test_opening_fee_can_overrule_individually_cheapest_lanes():
-    '''FIX-03: 全局费用包含每条实际启用线路的一次开线费。'''
+    '''FIX-03: "所有启用线路开线费与订单变动费之和。"'''
     data = {
         "nodes": ["S", "A", "T"],
         "lanes": [
@@ -197,7 +197,7 @@ def test_opening_fee_can_overrule_individually_cheapest_lanes():
 
 
 def test_whole_order_cannot_be_split_across_individually_insufficient_paths():
-    '''CAP-02: 每张订单不得拆分，必须有一条路径可承载该订单全部托盘。'''
+    '''CAP-02: "每张订单只能整体接收或整体拒收。"'''
     data = {
         "nodes": ["S", "A", "B", "T"],
         "lanes": [
@@ -216,7 +216,7 @@ def test_whole_order_cannot_be_split_across_individually_insufficient_paths():
 
 
 def test_partial_capacity_assignment_prefers_feasible_order_subset():
-    '''CAP-02: 线路占用不得超过共用容量，并以订单优先级选择可行子集。'''
+    '''CAP-02: "所有订单共用同一班次的线路容量。"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [{"lane_id": "ONLY", "from": "S", "to": "T", "capacity": 3, "open_fee": 1, "unit_cost": 2}],
@@ -235,7 +235,7 @@ def test_partial_capacity_assignment_prefers_feasible_order_subset():
 
 
 def test_tie_break_uses_lane_ids_not_input_lane_order():
-    '''TIE-04: 相同服务数和总费用按线路 ID 序列 ASCII 字典序裁决。'''
+    '''TIE-04: "逐单比较路径的 `lane_id` 序列（ASCII 字典序）；"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [
@@ -252,7 +252,7 @@ def test_tie_break_uses_lane_ids_not_input_lane_order():
 
 
 def test_tie_break_is_stable_under_order_input_permutation():
-    '''TIE-04: 费用并列时订单按 ID 而非输入顺序决定路径组合。'''
+    '''TIE-04: "将订单按 `order_id` 升序排列"'''
     lanes = [
         {"lane_id": "A", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
         {"lane_id": "B", "from": "S", "to": "T", "capacity": 1, "open_fee": 0, "unit_cost": 0},
@@ -270,7 +270,7 @@ def test_tie_break_is_stable_under_order_input_permutation():
 
 
 def test_unreachable_order_is_rejected_without_changing_other_service():
-    '''PRI-01: 无可行路径的订单不阻止其他订单正常排程。'''
+    '''PRI-01: "输入合法但无订单可承运时，应成功输出全拒收的零费用计划。"'''
     data = {
         "nodes": ["S", "T", "X"],
         "lanes": [{"lane_id": "ST", "from": "S", "to": "T", "capacity": 1, "open_fee": 4, "unit_cost": 2}],
@@ -287,7 +287,7 @@ def test_unreachable_order_is_rejected_without_changing_other_service():
 
 
 def test_output_shape_and_input_order_are_preserved():
-    '''VALID-05: 输出字段集合固定，订单与线路行分别保持输入顺序。'''
+    '''VALID-05: "输出只能包含 `served_counts`、`total_cost`、`orders`、`lane_loads`。"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [
@@ -308,7 +308,7 @@ def test_output_shape_and_input_order_are_preserved():
 
 
 def test_identical_input_produces_identical_json_bytes():
-    '''VALID-05: 相同输入必须产生相同 JSON 字节。'''
+    '''VALID-05: "相同输入必须产生相同 JSON 字节。"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 1, "open_fee": 3, "unit_cost": 4}],
@@ -322,14 +322,14 @@ def test_identical_input_produces_identical_json_bytes():
 
 
 def test_rejects_duplicate_json_key_without_creating_output():
-    '''VALID-05: 任意 JSON 对象出现重复键时，输入无效。'''
+    '''VALID-05: "任何 JSON 对象出现重复键、缺键、多余键、错误类型、布尔数值或越界值时，输入无效。"'''
     raw = '{"nodes":["S","T"],"nodes":["S","X"],"lanes":[],"orders":[]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
 
 
 def test_rejects_boolean_capacity_and_preserves_sentinel():
-    '''VALID-05: 布尔值不是整数容量，拒收时旧文件字节不变。'''
+    '''VALID-05: "容量为 1 至 32 的整数"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": True, "open_fee": 0, "unit_cost": 0}],
@@ -341,14 +341,14 @@ def test_rejects_boolean_capacity_and_preserves_sentinel():
 
 
 def test_rejects_fractional_integer_field():
-    '''VALID-05: 公开字段声明为整数，浮点形式的整数也不是合法整数值。'''
+    '''VALID-05: "容量为 1 至 32 的整数"'''
     raw = '{"nodes":["S","T"],"lanes":[{"lane_id":"L","from":"S","to":"T","capacity":1.0,"open_fee":0,"unit_cost":0}],"orders":[{"order_id":"O","origin":"S","destination":"T","priority":0,"pallets":1}]}'
     process, output, exists, leftovers = run({}, raw=raw)
     assert process.returncode != 0 and output is None and not exists and leftovers == []
 
 
 def test_rejects_duplicate_identifier_and_late_invalid_order_atomically():
-    '''VALID-05: 重复订单标识或末尾非法订单均拒收且不得留下临时文件。'''
+    '''VALID-05: "`order_id` 唯一且符合 `[A-Z0-9-]{1,16}`"'''
     data = {
         "nodes": ["S", "T"],
         "lanes": [{"lane_id": "L", "from": "S", "to": "T", "capacity": 8, "open_fee": 0, "unit_cost": 0}],
@@ -366,8 +366,8 @@ def test_rejects_duplicate_identifier_and_late_invalid_order_atomically():
     assert process.returncode != 0 and output is None and not exists and leftovers == []
 
 
-def test_atomic_replace_failure_preserves_old_report():
-    '''VALID-05: 发布替换失败必须保留原报告字节并清理临时文件。'''
+def test_atomic_replace_failure_preserves_old_report(monkeypatch):
+    '''VALID-05: "拒收或发布失败不得创建或改动目标文件，也不得留下临时产物。"'''
     import importlib.util
 
     data = {
@@ -384,14 +384,8 @@ def test_atomic_replace_failure_preserves_old_report():
         spec = importlib.util.spec_from_file_location("candidate_solver", APP)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        original = module.os.replace
-        module.os.replace = lambda _src, _dst: (_ for _ in ()).throw(OSError("injected"))
-        old_argv = sys.argv
-        sys.argv = [APP, str(input_path), str(output_path)]
-        try:
-            status = module.main()
-        finally:
-            sys.argv = old_argv
-            module.os.replace = original
+        monkeypatch.setattr(module.os, "replace", lambda _src, _dst: (_ for _ in ()).throw(OSError("injected")))
+        monkeypatch.setattr(sys, "argv", [APP, str(input_path), str(output_path)])
+        status = module.main()
         assert status != 0 and output_path.read_bytes() == sentinel
         assert sorted(path.name for path in root.iterdir()) == ["input.json", "output.json"]
