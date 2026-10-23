@@ -9,7 +9,8 @@ EXPECTED = {
     'test_zero_capacity_edges_are_ignored', 'test_invalid_boolean_capacity_rejected', 'test_output_has_exact_public_keys',
     'test_invalid_top_level_preserves_absent_destination_and_no_artifacts',
     'test_invalid_cost_preserves_existing_sentinel_byte_for_byte',
-    'test_late_invalid_record_does_not_publish_prefix_or_checkpoint'
+    'test_late_invalid_record_does_not_publish_prefix_or_checkpoint',
+    'test_released_rejected_released_state_matrix'
 }
 if len(sys.argv) not in (2,): raise SystemExit(2)
 try:
